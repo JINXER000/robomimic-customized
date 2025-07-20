@@ -16,6 +16,18 @@ try:
 except ImportError:
     pass
 
+try:
+    # try to import mimicgen environments
+    import dexmimicgen
+except ImportError:
+    print("WARNING: could not import dexmimicgen envs")
+
+try:
+    # try to import LIBERO environments
+    from libero.libero.envs import *
+except ImportError:
+    print("WARNING: could not import LIBERO envs")
+    
 import robomimic.utils.obs_utils as ObsUtils
 import robomimic.envs.env_base as EB
 
@@ -117,6 +129,11 @@ class EnvRobosuite(EB.EnvBase):
             kwargs["gripper_visualization"] = False
             del kwargs["camera_depths"]
             kwargs["camera_depth"] = False # rename kwarg
+        ## unsupported kwargs, which is for robosuite 1.5.1
+        if 'env_lang' in kwargs:
+            del kwargs['env_lang']
+        ## for 'object-state'
+        kwargs['use_object_obs'] = True
 
         self._env_name = env_name
         self._init_kwargs = deepcopy(kwargs)
@@ -264,7 +281,8 @@ class EnvRobosuite(EB.EnvBase):
                     ret[k] = ObsUtils.process_obs(obs=ret[k], obs_key=k)
 
         # "object" key contains object information
-        ret["object"] = np.array(di["object-state"])
+        if "object-state" in di:
+            ret["object"] = np.array(di["object-state"])
 
         if self.env.use_camera_obs:
             workspace = self.voxel_workspace
