@@ -38,6 +38,19 @@ try:
 except ImportError:
     MUJOCO_EXCEPTIONS = []
 
+def get_name2id(env):
+    """
+    Creates a mapping from instance names to their corresponding IDs.
+    
+    Args:
+        env: The environment object containing instance information.
+        
+    Returns:
+        dict: A dictionary mapping instance names to their IDs.
+    """
+    return {inst: (i+1) for i, inst in enumerate(list(env.model.instances_to_ids.keys()))}
+
+
 def depth2fgpcd(depth, mask, cam_params):
     # depth: (h, w)
     # fgpcd: (n, 3)
@@ -66,6 +79,17 @@ def np2o3d(pcd, color=None):
         assert color.min() >= 0
         pcd_o3d.colors = o3d.utility.Vector3dVector(color)
     return pcd_o3d
+
+def get_interested_objects(env_name):
+        ## set interested objects
+    if env_name == 'TwoArmThreePieceAssembly':
+        interested_objects = ['base', 'piece_1', 'piece_2']
+    elif env_name == 'TwoArmThreading':
+        interested_objects = ['tripod_obj', 'needle_obj']
+    else:
+        raise NotImplementedError(f"Unsupported environment: {env_name}")
+    
+    return interested_objects
 
 class EnvRobosuite(EB.EnvBase):
     """Wrapper class for robosuite environments (https://github.com/ARISE-Initiative/robosuite)"""
@@ -134,6 +158,13 @@ class EnvRobosuite(EB.EnvBase):
             del kwargs['env_lang']
         ## for 'object-state'
         kwargs['use_object_obs'] = True
+
+        ## TODO: if there is interested objects and segmentation is enabled, output instance pcd.
+        if kwargs["camera_segmentations"] == "instance":
+            self.interested_objects = get_interested_objects(env_name)
+            self.output_instance_pcd = True
+        else:
+            self.output_instance_pcd = False
 
         self._env_name = env_name
         self._init_kwargs = deepcopy(kwargs)
@@ -257,6 +288,7 @@ class EnvRobosuite(EB.EnvBase):
         else:
             raise NotImplementedError("mode={} is not implemented".format(mode))
 
+
     def get_observation(self, di=None):
         """
         Get current environment observation dictionary.
@@ -293,6 +325,49 @@ class EnvRobosuite(EB.EnvBase):
             # ])
             voxel_bound = workspace.T
             voxel_size = 64
+
+            if self.output_instance_pcd:
+                instance_pcds = {k:o3d.geometry.PointCloud() for k in self.interested_objects}
+                name2id = get_name2id(self.env)
+                for cam_idx, camera_name in enumerate(self.env.camera_names):
+                    cam_height = self.env.camera_heights[cam_idx]
+                    cam_width = self.env.camera_widths[cam_idx]
+                    ext_mat = get_camera_extrinsic_matrix(self.env.sim, camera_name)
+                    int_mat = get_camera_intrinsic_matrix(self.env.sim, camera_name, cam_height, cam_width)
+                    cam_param = [int_mat[0, 0], int_mat[1, 1], int_mat[0, 2], int_mat[1, 2]]
+                    depth = di[f'{camera_name}_depth'][::-1]
+                    depth = np.clip(depth, 0, 1)
+                    depth = get_real_depth_map(self.env.sim, depth)
+                    depth = depth[:, :, 0]
+                    color = di[f'{camera_name}_image'][::-1]
+
+                    for obj_name in self.interested_objects:
+                        seg_id = name2id[obj_name]
+                        if seg_id is None:
+                            continue
+                        binary_mask = (di[f"{camera_name}_segmentation_instance"][:, :, 0] == seg_id).astype(np.uint8)
+                        # Flip binary_mask to match OpenCV convention (consistent with flipped RGB/depth)
+                        binary_mask = binary_mask[::-1]  # Flip vertically                     
+                        rgb_mask = np.stack([binary_mask]*3, axis=-1)
+                        obj_pcd_c =  depth2fgpcd(depth, binary_mask, cam_param)
+
+                        obj_pcd_w = ext_mat @ np.concatenate([obj_pcd_c.T, np.ones((1, obj_pcd_c.shape[0]))], axis=0)
+                        obj_pcd_w = obj_pcd_w[:3, :].T
+
+                        masked_color = (color*rgb_mask).reshape(-1, 3).astype(np.float64) / 255
+                        masked_color = masked_color[masked_color[:, 0] > 0]
+                        obj_pcd_o3d = np2o3d(obj_pcd_w, masked_color)
+
+                        instance_pcds[obj_name] += obj_pcd_o3d
+                
+                for obj_name, obj_pcd in instance_pcds.items():
+                    # o3d.io.write_point_cloud(f'{obj_name}.ply', obj_pcd)
+
+                    obj_xyz = np.asarray(obj_pcd.points)
+                    obj_color = np.asarray(obj_pcd.colors)
+
+                    ret[f'{obj_name}_point_cloud'] = np.concatenate([obj_xyz, obj_color], 1)
+
 
             all_pcds = o3d.geometry.PointCloud()
             for cam_idx, camera_name in enumerate(self.env.camera_names):
