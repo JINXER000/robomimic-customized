@@ -58,11 +58,7 @@ import robomimic.envs.env_robosuite
 import multiprocessing
 multiprocessing.set_start_method('spawn', force=True)
 
-try:
-    # try to import LIBERO environments
-    from libero.libero.envs import *
-except ImportError:
-    print("WARNING: could not import LIBERO envs")
+
 
 def extract_trajectory(
     env_meta,
@@ -88,9 +84,10 @@ def extract_trajectory(
     if env_meta['env_name'].startswith('PickPlace_'):
         camera_names=['birdview', 'agentview', 'robot0_eye_in_hand']
     elif env_meta['env_name'].startswith('Libero_'):
-        camera_names=['agentview', 'eye_in_hand']
+        camera_names=['agentview', 'robot0_eye_in_hand']
     else: ## mimicgen, dexmimicgen
         camera_names=['birdview', 'agentview', 'sideview', 'robot0_eye_in_hand']
+    ## dexmimicgen
     if args.num_robots == 2:
         camera_names.append('robot1_eye_in_hand')
     env = EnvUtils.create_env_for_data_processing(
@@ -185,10 +182,34 @@ def dataset_states_to_obs(args):
     if env_meta['env_name'].startswith('PickPlace_'):
         camera_names=['birdview', 'agentview', 'robot0_eye_in_hand']
     elif env_meta['env_name'].startswith('Libero_'):
-          
-        camera_names=['agentview', 'eye_in_hand']
+        camera_names=['agentview', 'robot0_eye_in_hand']
+
+        from libero.libero import get_libero_path
+        from libero.libero import benchmark
+        from libero.libero.envs import OffScreenRenderEnv
+
+        benchmark_dict = benchmark.get_benchmark_dict()
+        task_suite_name = args.dataset_type # can also choose libero_spatial, libero_object, etc.
+        task_suite = benchmark_dict[task_suite_name]()
+
+        for task_id in range(task_suite.n_tasks):
+            task = task_suite.get_task(task_id)
+            task_name = task.name
+            if task_name in args.input:
+                task_bddl_file = os.path.join(get_libero_path("bddl_files"), task.problem_folder, task.bddl_file)
+                break
+
+        env_meta['bddl_file'] = task_bddl_file
+        env_meta['env_kwargs']['bddl_file_name'] = task_bddl_file
+        env_meta['env_kwargs']["camera_segmentations"] = "instance"
     else:
         camera_names=['birdview', 'agentview', 'sideview', 'robot0_eye_in_hand']
+
+    if args.num_robots == 2:
+        env_meta['env_kwargs']["camera_segmentations"] = "instance"
+
+    env_meta['env_kwargs']['output_all_pcds'] = args.output_all_pcds
+        
     env = EnvUtils.create_env_for_data_processing(
         env_meta=env_meta,
         camera_names=camera_names, 
@@ -196,6 +217,7 @@ def dataset_states_to_obs(args):
         camera_width=args.camera_width, 
         reward_shaping=args.shaped,
     )
+    # env = OffScreenRenderEnv(**env_meta['env_kwargs'])
 
     print("==== Using environment with the following metadata ====")
     print(json.dumps(env.serialize(), indent=4))
@@ -293,8 +315,16 @@ def dataset_states_to_obs(args):
     f.close()
     f_out.close()
 
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--dataset_type",
+        type=str,
+        default='libero_spatial',
+        help="Choose from libero_spatial, libero_object, DMG",
+    )
     parser.add_argument(
         "--input",
         type=str,
@@ -307,6 +337,14 @@ if __name__ == "__main__":
         type=str,
         required=True,
         help="name of output hdf5 dataset",
+    )
+
+    ## if output all pcd
+    parser.add_argument(
+        "--output_all_pcds",
+        type=bool, 
+        default=False, 
+        help="set to True only when train policy",
     )
 
     # specify number of demos to process - useful for debugging conversion with a handful

@@ -80,12 +80,14 @@ def np2o3d(pcd, color=None):
         pcd_o3d.colors = o3d.utility.Vector3dVector(color)
     return pcd_o3d
 
-def get_interested_objects(env_name):
+def get_interested_objects(env, env_name):
         ## set interested objects
     if env_name == 'TwoArmThreePieceAssembly':
         interested_objects = ['base', 'piece_1', 'piece_2']
     elif env_name == 'TwoArmThreading':
         interested_objects = ['tripod_obj', 'needle_obj']
+    elif env_name.startswith('Libero_'):
+        interested_objects = env.obj_of_interest
     else:
         raise NotImplementedError(f"Unsupported environment: {env_name}")
     
@@ -159,12 +161,11 @@ class EnvRobosuite(EB.EnvBase):
         ## for 'object-state'
         kwargs['use_object_obs'] = True
 
-        ## TODO: if there is interested objects and segmentation is enabled, output instance pcd.
-        if kwargs["camera_segmentations"] == "instance":
-            self.interested_objects = get_interested_objects(env_name)
-            self.output_instance_pcd = True
-        else:
-            self.output_instance_pcd = False
+
+        self.output_all_pcds = False
+        if "output_all_pcds" in kwargs:
+            self.output_all_pcds = kwargs["output_all_pcds"]               
+            del kwargs["output_all_pcds"]
 
         self._env_name = env_name
         self._init_kwargs = deepcopy(kwargs)
@@ -200,6 +201,21 @@ class EnvRobosuite(EB.EnvBase):
             [pc_center[1] - self.ws_size/2, pc_center[1] + self.ws_size/2],
             [pc_center[2], pc_center[2] + self.ws_size]
         ])
+
+        if env_name.startswith('Libero_'):
+            self.is_libero = True
+        else:
+            self.is_libero = False
+
+        ## if there is interested objects and segmentation is enabled, output instance pcd.
+        if kwargs["camera_segmentations"] == "instance":
+            self.interested_objects = get_interested_objects(self.env, env_name)
+            assert len(self.interested_objects) > 0, f"no interested objects found for environment {env_name}"
+            self.output_instance_pcd = True
+        else:
+            self.output_instance_pcd = False
+
+
 
     def step(self, action):
         """
@@ -242,7 +258,7 @@ class EnvRobosuite(EB.EnvBase):
                 if "states" is in @state)
         """
         should_ret = False
-        if "model" in state:
+        if "model" in state and not self.is_libero:
             self.reset()
             robosuite_version_id = int(robosuite.__version__.split(".")[1])
             if robosuite_version_id <= 3:
@@ -360,129 +376,151 @@ class EnvRobosuite(EB.EnvBase):
 
                         instance_pcds[obj_name] += obj_pcd_o3d
                 
-                for obj_name, obj_pcd in instance_pcds.items():
+                obj_pc_size = 128
+                for obj_name, obj_pcd_raw in instance_pcds.items():
+
+                    ## filter pc
+                    obj_pcd, ind = obj_pcd_raw.remove_radius_outlier(nb_points=10, radius=0.05)
                     # o3d.io.write_point_cloud(f'{obj_name}.ply', obj_pcd)
+
+                    if len(obj_pcd.points) == 0:
+                        # create fake points
+                        obj_pcd.points = o3d.utility.Vector3dVector(np.array([[0., 0., 0.]]))
+                        obj_pcd.colors = o3d.utility.Vector3dVector(np.array([[0., 0., 0.]]))
+                    if len(obj_pcd.points) < obj_pc_size:
+                        # random upsample to obj_pc_size
+                        num_pad = obj_pc_size - len(obj_pcd.points)
+                        indices = np.random.choice(len(obj_pcd.points), num_pad)
+                        padded_xyz = np.asarray(obj_pcd.points)[indices]
+                        padded_color = np.asarray(obj_pcd.colors)[indices]
+                        xyz = np.concatenate([np.asarray(obj_pcd.points), padded_xyz], 0)
+                        color = np.concatenate([np.asarray(obj_pcd.colors), padded_color], 0)
+                        obj_pcd = o3d.geometry.PointCloud()
+                        obj_pcd.points = o3d.utility.Vector3dVector(xyz)
+                        obj_pcd.colors = o3d.utility.Vector3dVector(color)
+                    
+                    obj_pcd = obj_pcd.farthest_point_down_sample(obj_pc_size)
 
                     obj_xyz = np.asarray(obj_pcd.points)
                     obj_color = np.asarray(obj_pcd.colors)
 
                     ret[f'{obj_name}_point_cloud'] = np.concatenate([obj_xyz, obj_color], 1)
 
+            if self.output_all_pcds:
+                all_pcds = o3d.geometry.PointCloud()
+                for cam_idx, camera_name in enumerate(self.env.camera_names):
+                    cam_height = self.env.camera_heights[cam_idx]
+                    cam_width = self.env.camera_widths[cam_idx]
+                    ext_mat = get_camera_extrinsic_matrix(self.env.sim, camera_name)
+                    int_mat = get_camera_intrinsic_matrix(self.env.sim, camera_name, cam_height, cam_width)
+                    depth = di[f'{camera_name}_depth'][::-1]
+                    depth = np.clip(depth, 0, 1)
+                    depth = get_real_depth_map(self.env.sim, depth)
+                    depth = depth[:, :, 0]
+                    color = di[f'{camera_name}_image'][::-1]
+                    # depth = ret[f'{camera_name}_depth'][:, :, 0]
+                    # color = ret[f'{camera_name}_image']
+                    # if camera_name != 'agentview':
+                    #     del ret[f'{camera_name}_depth']
+                    #     del ret[f'{camera_name}_image']
+                    cam_param = [int_mat[0, 0], int_mat[1, 1], int_mat[0, 2], int_mat[1, 2]]
+                    mask = np.ones_like(depth, dtype=bool)
+                    pcd = depth2fgpcd(depth, mask, cam_param)
 
-            all_pcds = o3d.geometry.PointCloud()
-            for cam_idx, camera_name in enumerate(self.env.camera_names):
-                cam_height = self.env.camera_heights[cam_idx]
-                cam_width = self.env.camera_widths[cam_idx]
-                ext_mat = get_camera_extrinsic_matrix(self.env.sim, camera_name)
-                int_mat = get_camera_intrinsic_matrix(self.env.sim, camera_name, cam_height, cam_width)
-                depth = di[f'{camera_name}_depth'][::-1]
-                depth = np.clip(depth, 0, 1)
-                depth = get_real_depth_map(self.env.sim, depth)
-                depth = depth[:, :, 0]
-                color = di[f'{camera_name}_image'][::-1]
-                # depth = ret[f'{camera_name}_depth'][:, :, 0]
-                # color = ret[f'{camera_name}_image']
-                # if camera_name != 'agentview':
-                #     del ret[f'{camera_name}_depth']
-                #     del ret[f'{camera_name}_image']
-                cam_param = [int_mat[0, 0], int_mat[1, 1], int_mat[0, 2], int_mat[1, 2]]
-                mask = np.ones_like(depth, dtype=bool)
-                pcd = depth2fgpcd(depth, mask, cam_param)
+                    # pose = np.linalg.inv(ext_mat)
+                    pose = ext_mat
+                    
+                    trans_pcd = pose @ np.concatenate([pcd.T, np.ones((1, pcd.shape[0]))], axis=0)
+                    trans_pcd = trans_pcd[:3, :].T
 
-                # pose = np.linalg.inv(ext_mat)
-                pose = ext_mat
+                    mask = (trans_pcd[:, 0] > workspace[0, 0]) * (trans_pcd[:, 0] < workspace[0, 1]) * (trans_pcd[:, 1] > workspace[1, 0]) * (trans_pcd[:, 1] < workspace[1, 1]) * (trans_pcd[:, 2] > workspace[2, 0]) * (trans_pcd[:, 2] < workspace[2, 1])
+
+                    pcd_o3d = np2o3d(trans_pcd[mask], color.reshape(-1, 3)[mask].astype(np.float64) / 255)
+
+                    all_pcds += pcd_o3d
+
+                voxel_grid = o3d.geometry.VoxelGrid.create_from_point_cloud_within_bounds(all_pcds, voxel_size=self.ws_size/voxel_size+1e-4, min_bound=voxel_bound[0], max_bound=voxel_bound[1])
+                voxels = voxel_grid.get_voxels()  # returns list of voxels
+                if len(voxels) == 0:
+                    np_voxels = np.zeros([4, voxel_size, voxel_size, voxel_size], dtype=np.uint8)
+                else:
+                    indices = np.stack(list(vx.grid_index for vx in voxels))
+                    colors = np.stack(list(vx.color for vx in voxels))
+
+                    mask = (indices > 0) * (indices < voxel_size)
+                    indices = indices[mask.all(axis=1)]
+                    colors = colors[mask.all(axis=1)]
+
+                    np_voxels = np.zeros([4, voxel_size, voxel_size, voxel_size], dtype=np.uint8)
+                    np_voxels[0, indices[:, 0], indices[:, 1], indices[:, 2]] = 1
+                    np_voxels[1:, indices[:, 0], indices[:, 1], indices[:, 2]] = colors.T * 255
+
+                # np_voxels = np.moveaxis(np_voxels, [0, 1, 2, 3], [0, 3, 2, 1])
+                # np_voxels = np.flip(np_voxels, (1, 2))
+
+                # import matplotlib.pyplot as plt
+                # from mpl_toolkits.mplot3d import Axes3D
+
+                # # Create a 3D plot
+                # fig = plt.figure()
+                # ax = fig.add_subplot(111, projection='3d')
                 
-                trans_pcd = pose @ np.concatenate([pcd.T, np.ones((1, pcd.shape[0]))], axis=0)
-                trans_pcd = trans_pcd[:3, :].T
+                # # indices = np.argwhere(np_voxels[0] != 0)
+                # # colors = np_voxels[1:, indices[:, 0], indices[:, 1], indices[:, 2]].T
 
-                mask = (trans_pcd[:, 0] > workspace[0, 0]) * (trans_pcd[:, 0] < workspace[0, 1]) * (trans_pcd[:, 1] > workspace[1, 0]) * (trans_pcd[:, 1] < workspace[1, 1]) * (trans_pcd[:, 2] > workspace[2, 0]) * (trans_pcd[:, 2] < workspace[2, 1])
+                # ax.scatter(indices[:, 0], indices[:, 1], indices[:, 2], color=colors, marker='s')
 
-                pcd_o3d = np2o3d(trans_pcd[mask], color.reshape(-1, 3)[mask].astype(np.float64) / 255)
+                # # Set labels and show the plot
+                # ax.set_xlabel('X Axis')
+                # ax.set_ylabel('Y Axis')
+                # ax.set_zlabel('Z Axis')
+                # ax.set_xlim(0, 64)
+                # ax.set_ylim(0, 64)
+                # ax.set_zlim(0, 64)
+                # plt.savefig('test2.png')
+                # plt.close()
 
-                all_pcds += pcd_o3d
+                ret['voxels'] = np_voxels
 
-            voxel_grid = o3d.geometry.VoxelGrid.create_from_point_cloud_within_bounds(all_pcds, voxel_size=self.ws_size/voxel_size+1e-4, min_bound=voxel_bound[0], max_bound=voxel_bound[1])
-            voxels = voxel_grid.get_voxels()  # returns list of voxels
-            if len(voxels) == 0:
-                np_voxels = np.zeros([4, voxel_size, voxel_size, voxel_size], dtype=np.uint8)
-            else:
-                indices = np.stack(list(vx.grid_index for vx in voxels))
-                colors = np.stack(list(vx.color for vx in voxels))
+                bounding_box = o3d.geometry.AxisAlignedBoundingBox(self.pc_workspace.T[0], self.pc_workspace.T[1])
+                cropped_pcd = all_pcds.crop(bounding_box)
+                if len(cropped_pcd.points) == 0:
+                    # create fake points
+                    cropped_pcd.points = o3d.utility.Vector3dVector(np.array([[0., 0., 0.]]))
+                    cropped_pcd.colors = o3d.utility.Vector3dVector(np.array([[0., 0., 0.]]))
+                if len(cropped_pcd.points) < 1024:
+                    # random upsample to 1024
+                    num_pad = 1024 - len(cropped_pcd.points)
+                    indices = np.random.choice(len(cropped_pcd.points), num_pad)
+                    padded_xyz = np.asarray(cropped_pcd.points)[indices]
+                    padded_color = np.asarray(cropped_pcd.colors)[indices]
+                    xyz = np.concatenate([np.asarray(cropped_pcd.points), padded_xyz], 0)
+                    color = np.concatenate([np.asarray(cropped_pcd.colors), padded_color], 0)
+                    cropped_pcd = o3d.geometry.PointCloud()
+                    cropped_pcd.points = o3d.utility.Vector3dVector(xyz)
+                    cropped_pcd.colors = o3d.utility.Vector3dVector(color)
+                sampled_pcds = cropped_pcd.farthest_point_down_sample(1024)
+                xyz = np.asarray(sampled_pcds.points)
+                color = np.asarray(sampled_pcds.colors)
 
-                mask = (indices > 0) * (indices < voxel_size)
-                indices = indices[mask.all(axis=1)]
-                colors = colors[mask.all(axis=1)]
+                # import matplotlib.pyplot as plt
+                # from mpl_toolkits.mplot3d import Axes3D
+                # fig = plt.figure()
+                # ax = fig.add_subplot(111, projection='3d')
 
-                np_voxels = np.zeros([4, voxel_size, voxel_size, voxel_size], dtype=np.uint8)
-                np_voxels[0, indices[:, 0], indices[:, 1], indices[:, 2]] = 1
-                np_voxels[1:, indices[:, 0], indices[:, 1], indices[:, 2]] = colors.T * 255
+                # # Scatter plot
+                # ax.scatter(xyz[:, 0], xyz[:, 1], xyz[:, 2], c=color, s=20)
 
-            # np_voxels = np.moveaxis(np_voxels, [0, 1, 2, 3], [0, 3, 2, 1])
-            # np_voxels = np.flip(np_voxels, (1, 2))
+                # # Labels
+                # ax.set_xlabel('X Label')
+                # ax.set_ylabel('Y Label')
+                # ax.set_zlabel('Z Label')
 
-            # import matplotlib.pyplot as plt
-            # from mpl_toolkits.mplot3d import Axes3D
+                # # Save the plot
+                # plt.savefig('1.png')
+                # plt.close()
 
-            # # Create a 3D plot
-            # fig = plt.figure()
-            # ax = fig.add_subplot(111, projection='3d')
-            
-            # # indices = np.argwhere(np_voxels[0] != 0)
-            # # colors = np_voxels[1:, indices[:, 0], indices[:, 1], indices[:, 2]].T
-
-            # ax.scatter(indices[:, 0], indices[:, 1], indices[:, 2], color=colors, marker='s')
-
-            # # Set labels and show the plot
-            # ax.set_xlabel('X Axis')
-            # ax.set_ylabel('Y Axis')
-            # ax.set_zlabel('Z Axis')
-            # ax.set_xlim(0, 64)
-            # ax.set_ylim(0, 64)
-            # ax.set_zlim(0, 64)
-            # plt.savefig('test2.png')
-            # plt.close()
-
-            ret['voxels'] = np_voxels
-
-            bounding_box = o3d.geometry.AxisAlignedBoundingBox(self.pc_workspace.T[0], self.pc_workspace.T[1])
-            cropped_pcd = all_pcds.crop(bounding_box)
-            if len(cropped_pcd.points) == 0:
-                # create fake points
-                cropped_pcd.points = o3d.utility.Vector3dVector(np.array([[0., 0., 0.]]))
-                cropped_pcd.colors = o3d.utility.Vector3dVector(np.array([[0., 0., 0.]]))
-            if len(cropped_pcd.points) < 1024:
-                # random upsample to 1024
-                num_pad = 1024 - len(cropped_pcd.points)
-                indices = np.random.choice(len(cropped_pcd.points), num_pad)
-                padded_xyz = np.asarray(cropped_pcd.points)[indices]
-                padded_color = np.asarray(cropped_pcd.colors)[indices]
-                xyz = np.concatenate([np.asarray(cropped_pcd.points), padded_xyz], 0)
-                color = np.concatenate([np.asarray(cropped_pcd.colors), padded_color], 0)
-                cropped_pcd = o3d.geometry.PointCloud()
-                cropped_pcd.points = o3d.utility.Vector3dVector(xyz)
-                cropped_pcd.colors = o3d.utility.Vector3dVector(color)
-            sampled_pcds = cropped_pcd.farthest_point_down_sample(1024)
-            xyz = np.asarray(sampled_pcds.points)
-            color = np.asarray(sampled_pcds.colors)
-
-            # import matplotlib.pyplot as plt
-            # from mpl_toolkits.mplot3d import Axes3D
-            # fig = plt.figure()
-            # ax = fig.add_subplot(111, projection='3d')
-
-            # # Scatter plot
-            # ax.scatter(xyz[:, 0], xyz[:, 1], xyz[:, 2], c=color, s=20)
-
-            # # Labels
-            # ax.set_xlabel('X Label')
-            # ax.set_ylabel('Y Label')
-            # ax.set_zlabel('Z Label')
-
-            # # Save the plot
-            # plt.savefig('1.png')
-            # plt.close()
-
-            ret['point_cloud'] = np.concatenate([xyz, color], 1)
+                ret['point_cloud'] = np.concatenate([xyz, color], 1)
 
         if self._is_v1:
             for robot in self.env.robots:
