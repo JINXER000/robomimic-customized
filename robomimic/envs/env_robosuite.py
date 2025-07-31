@@ -304,6 +304,72 @@ class EnvRobosuite(EB.EnvBase):
         else:
             raise NotImplementedError("mode={} is not implemented".format(mode))
 
+    def get_instance_pcd(self, di):
+        instance_pcds = {k:o3d.geometry.PointCloud() for k in self.interested_objects}
+        name2id = get_name2id(self.env)
+        for cam_idx, camera_name in enumerate(self.env.camera_names):
+            cam_height = self.env.camera_heights[cam_idx]
+            cam_width = self.env.camera_widths[cam_idx]
+            ext_mat = get_camera_extrinsic_matrix(self.env.sim, camera_name)
+            int_mat = get_camera_intrinsic_matrix(self.env.sim, camera_name, cam_height, cam_width)
+            cam_param = [int_mat[0, 0], int_mat[1, 1], int_mat[0, 2], int_mat[1, 2]]
+            depth = di[f'{camera_name}_depth'][::-1]
+            depth = np.clip(depth, 0, 1)
+            depth = get_real_depth_map(self.env.sim, depth)
+            depth = depth[:, :, 0]
+            color = di[f'{camera_name}_image'][::-1]
+
+            for obj_name in self.interested_objects:
+                seg_id = name2id[obj_name]
+                if seg_id is None:
+                    continue
+                binary_mask = (di[f"{camera_name}_segmentation_instance"][:, :, 0] == seg_id).astype(np.uint8)
+                # Flip binary_mask to match OpenCV convention (consistent with flipped RGB/depth)
+                binary_mask = binary_mask[::-1]  # Flip vertically                     
+                rgb_mask = np.stack([binary_mask]*3, axis=-1)
+                obj_pcd_c =  depth2fgpcd(depth, binary_mask, cam_param)
+
+                obj_pcd_w = ext_mat @ np.concatenate([obj_pcd_c.T, np.ones((1, obj_pcd_c.shape[0]))], axis=0)
+                obj_pcd_w = obj_pcd_w[:3, :].T
+
+                masked_color = (color*rgb_mask).reshape(-1, 3).astype(np.float64) / 255
+                masked_color = masked_color[masked_color[:, 0] > 0]
+                obj_pcd_o3d = np2o3d(obj_pcd_w, masked_color)
+
+                instance_pcds[obj_name] += obj_pcd_o3d
+        
+        obj_pc_size = 128
+        pc_instance_dict = {}
+        for obj_name, obj_pcd_raw in instance_pcds.items():
+
+            ## filter pc
+            obj_pcd, ind = obj_pcd_raw.remove_radius_outlier(nb_points=10, radius=0.05)
+            # o3d.io.write_point_cloud(f'{obj_name}.ply', obj_pcd)
+
+            if len(obj_pcd.points) == 0:
+                # create fake points
+                obj_pcd.points = o3d.utility.Vector3dVector(np.array([[0., 0., 0.]]))
+                obj_pcd.colors = o3d.utility.Vector3dVector(np.array([[0., 0., 0.]]))
+            if len(obj_pcd.points) < obj_pc_size:
+                # random upsample to obj_pc_size
+                num_pad = obj_pc_size - len(obj_pcd.points)
+                indices = np.random.choice(len(obj_pcd.points), num_pad)
+                padded_xyz = np.asarray(obj_pcd.points)[indices]
+                padded_color = np.asarray(obj_pcd.colors)[indices]
+                xyz = np.concatenate([np.asarray(obj_pcd.points), padded_xyz], 0)
+                color = np.concatenate([np.asarray(obj_pcd.colors), padded_color], 0)
+                obj_pcd = o3d.geometry.PointCloud()
+                obj_pcd.points = o3d.utility.Vector3dVector(xyz)
+                obj_pcd.colors = o3d.utility.Vector3dVector(color)
+            
+            obj_pcd = obj_pcd.farthest_point_down_sample(obj_pc_size)
+
+            obj_xyz = np.asarray(obj_pcd.points)
+            obj_color = np.asarray(obj_pcd.colors)
+            pc_instance_dict[f'{obj_name}_point_cloud'] = np.concatenate([obj_xyz, obj_color], 1)
+
+        return pc_instance_dict
+
 
     def get_observation(self, di=None):
         """
@@ -343,69 +409,10 @@ class EnvRobosuite(EB.EnvBase):
             voxel_size = 64
 
             if self.output_instance_pcd:
-                instance_pcds = {k:o3d.geometry.PointCloud() for k in self.interested_objects}
-                name2id = get_name2id(self.env)
-                for cam_idx, camera_name in enumerate(self.env.camera_names):
-                    cam_height = self.env.camera_heights[cam_idx]
-                    cam_width = self.env.camera_widths[cam_idx]
-                    ext_mat = get_camera_extrinsic_matrix(self.env.sim, camera_name)
-                    int_mat = get_camera_intrinsic_matrix(self.env.sim, camera_name, cam_height, cam_width)
-                    cam_param = [int_mat[0, 0], int_mat[1, 1], int_mat[0, 2], int_mat[1, 2]]
-                    depth = di[f'{camera_name}_depth'][::-1]
-                    depth = np.clip(depth, 0, 1)
-                    depth = get_real_depth_map(self.env.sim, depth)
-                    depth = depth[:, :, 0]
-                    color = di[f'{camera_name}_image'][::-1]
+                pc_instance_dict = self.get_instance_pcd(di)
+                ret.update(pc_instance_dict)
 
-                    for obj_name in self.interested_objects:
-                        seg_id = name2id[obj_name]
-                        if seg_id is None:
-                            continue
-                        binary_mask = (di[f"{camera_name}_segmentation_instance"][:, :, 0] == seg_id).astype(np.uint8)
-                        # Flip binary_mask to match OpenCV convention (consistent with flipped RGB/depth)
-                        binary_mask = binary_mask[::-1]  # Flip vertically                     
-                        rgb_mask = np.stack([binary_mask]*3, axis=-1)
-                        obj_pcd_c =  depth2fgpcd(depth, binary_mask, cam_param)
-
-                        obj_pcd_w = ext_mat @ np.concatenate([obj_pcd_c.T, np.ones((1, obj_pcd_c.shape[0]))], axis=0)
-                        obj_pcd_w = obj_pcd_w[:3, :].T
-
-                        masked_color = (color*rgb_mask).reshape(-1, 3).astype(np.float64) / 255
-                        masked_color = masked_color[masked_color[:, 0] > 0]
-                        obj_pcd_o3d = np2o3d(obj_pcd_w, masked_color)
-
-                        instance_pcds[obj_name] += obj_pcd_o3d
-                
-                obj_pc_size = 128
-                for obj_name, obj_pcd_raw in instance_pcds.items():
-
-                    ## filter pc
-                    obj_pcd, ind = obj_pcd_raw.remove_radius_outlier(nb_points=10, radius=0.05)
-                    # o3d.io.write_point_cloud(f'{obj_name}.ply', obj_pcd)
-
-                    if len(obj_pcd.points) == 0:
-                        # create fake points
-                        obj_pcd.points = o3d.utility.Vector3dVector(np.array([[0., 0., 0.]]))
-                        obj_pcd.colors = o3d.utility.Vector3dVector(np.array([[0., 0., 0.]]))
-                    if len(obj_pcd.points) < obj_pc_size:
-                        # random upsample to obj_pc_size
-                        num_pad = obj_pc_size - len(obj_pcd.points)
-                        indices = np.random.choice(len(obj_pcd.points), num_pad)
-                        padded_xyz = np.asarray(obj_pcd.points)[indices]
-                        padded_color = np.asarray(obj_pcd.colors)[indices]
-                        xyz = np.concatenate([np.asarray(obj_pcd.points), padded_xyz], 0)
-                        color = np.concatenate([np.asarray(obj_pcd.colors), padded_color], 0)
-                        obj_pcd = o3d.geometry.PointCloud()
-                        obj_pcd.points = o3d.utility.Vector3dVector(xyz)
-                        obj_pcd.colors = o3d.utility.Vector3dVector(color)
-                    
-                    obj_pcd = obj_pcd.farthest_point_down_sample(obj_pc_size)
-
-                    obj_xyz = np.asarray(obj_pcd.points)
-                    obj_color = np.asarray(obj_pcd.colors)
-
-                    ret[f'{obj_name}_point_cloud'] = np.concatenate([obj_xyz, obj_color], 1)
-
+            ## TODO: output obstacle pcds (all pcds that does not lie in OOBB of interested objects, and below gripper range)
             if self.output_all_pcds:
                 all_pcds = o3d.geometry.PointCloud()
                 for cam_idx, camera_name in enumerate(self.env.camera_names):
