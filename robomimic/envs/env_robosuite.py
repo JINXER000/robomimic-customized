@@ -344,7 +344,8 @@ class EnvRobosuite(EB.EnvBase):
 
             ## filter pc
             obj_pcd, ind = obj_pcd_raw.remove_radius_outlier(nb_points=10, radius=0.05)
-            # o3d.io.write_point_cloud(f'{obj_name}.ply', obj_pcd)
+            obj_pcd, ind = obj_pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
+            # o3d.io.write_point_cloud(f'{obj_name}_128.ply', obj_pcd)
 
             if len(obj_pcd.points) == 0:
                 # create fake points
