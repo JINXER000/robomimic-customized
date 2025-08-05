@@ -38,6 +38,10 @@ try:
 except ImportError:
     MUJOCO_EXCEPTIONS = []
 
+## depth cameras that used to construct instance pc
+D_CAM = ['agentview', 'birdview', 'frontview'] 
+OBJ_PC_SIZE = 256
+
 def get_name2id(env):
     """
     Creates a mapping from instance names to their corresponding IDs.
@@ -308,6 +312,9 @@ class EnvRobosuite(EB.EnvBase):
         instance_pcds = {k:o3d.geometry.PointCloud() for k in self.interested_objects}
         name2id = get_name2id(self.env)
         for cam_idx, camera_name in enumerate(self.env.camera_names):
+            if camera_name not in D_CAM:
+                continue
+            
             cam_height = self.env.camera_heights[cam_idx]
             cam_width = self.env.camera_widths[cam_idx]
             ext_mat = get_camera_extrinsic_matrix(self.env.sim, camera_name)
@@ -338,7 +345,7 @@ class EnvRobosuite(EB.EnvBase):
 
                 instance_pcds[obj_name] += obj_pcd_o3d
         
-        obj_pc_size = 128
+        obj_pc_size = OBJ_PC_SIZE
         pc_instance_dict = {}
         for obj_name, obj_pcd_raw in instance_pcds.items():
 
@@ -417,6 +424,8 @@ class EnvRobosuite(EB.EnvBase):
             if self.output_all_pcds:
                 all_pcds = o3d.geometry.PointCloud()
                 for cam_idx, camera_name in enumerate(self.env.camera_names):
+                    if camera_name not in D_CAM:
+                        continue  
                     cam_height = self.env.camera_heights[cam_idx]
                     cam_width = self.env.camera_widths[cam_idx]
                     ext_mat = get_camera_extrinsic_matrix(self.env.sim, camera_name)

@@ -86,7 +86,7 @@ def extract_trajectory(
     elif env_meta['env_name'].startswith('Libero_'):
         camera_names=['agentview', 'robot0_eye_in_hand']
     else: ## mimicgen, dexmimicgen
-        camera_names=['birdview', 'agentview', 'sideview', 'robot0_eye_in_hand']
+        camera_names=['frontview', 'birdview', 'agentview', 'sideview', 'robot0_eye_in_hand']
     ## dexmimicgen
     if args.num_robots == 2:
         camera_names.append('robot1_eye_in_hand')
@@ -205,6 +205,7 @@ def dataset_states_to_obs(args):
     else:
         camera_names=['birdview', 'agentview', 'sideview', 'robot0_eye_in_hand']
 
+    ## dexmimicgen
     if args.num_robots == 2:
         env_meta['env_kwargs']["camera_segmentations"] = "instance"
 
@@ -283,7 +284,17 @@ def dataset_states_to_obs(args):
             ep_data_grp.create_dataset("states", data=np.array(traj["states"]))
             ep_data_grp.create_dataset("rewards", data=np.array(traj["rewards"]))
             ep_data_grp.create_dataset("dones", data=np.array(traj["dones"]))
+            ignore_keys = ['depth', 'segment']
             for k in traj["obs"]:
+                ignore = False
+                for ignore_key in ignore_keys:
+                    if ignore_key in k:
+                        # skip keys that contain ignore_key
+                        ignore = True
+                        break
+                if ignore:
+                    continue
+
                 if args.compress:
                     ep_data_grp.create_dataset("obs/{}".format(k), data=np.array(traj["obs"][k]), compression="gzip")
                 else:
