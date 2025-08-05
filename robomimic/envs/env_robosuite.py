@@ -212,7 +212,7 @@ class EnvRobosuite(EB.EnvBase):
             self.is_libero = False
 
         ## if there is interested objects and segmentation is enabled, output instance pcd.
-        if kwargs["camera_segmentations"] == "instance":
+        if "camera_segmentations" in kwargs and kwargs["camera_segmentations"] == "instance":
             self.interested_objects = get_interested_objects(self.env, env_name)
             assert len(self.interested_objects) > 0, f"no interested objects found for environment {env_name}"
             self.output_instance_pcd = True
