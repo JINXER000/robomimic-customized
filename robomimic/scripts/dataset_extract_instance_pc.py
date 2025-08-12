@@ -84,7 +84,7 @@ def extract_trajectory(
     if env_meta['env_name'].startswith('PickPlace_'):
         camera_names=['birdview', 'agentview', 'robot0_eye_in_hand']
     elif env_meta['env_name'].startswith('Libero_'):
-        camera_names=['agentview', 'robot0_eye_in_hand']
+        camera_names=['birdview', 'agentview', 'robot0_eye_in_hand']
     else: ## mimicgen, dexmimicgen
         camera_names=['frontview', 'birdview', 'agentview', 'sideview', 'robot0_eye_in_hand']
     ## dexmimicgen
@@ -177,12 +177,22 @@ def worker(x):
 
 def dataset_states_to_obs(args):
     num_workers = args.num_workers
+    # Determine output path early and skip if it already exists to avoid creating rendering contexts
+    input_file_name = os.path.basename(args.input)
+    output_path = os.path.join(args.output_dir, input_file_name.replace(".hdf5", "_pc_instance.hdf5"))
+    parent_dir = os.path.dirname(output_path)
+    if parent_dir and not os.path.exists(parent_dir):
+        os.makedirs(parent_dir, exist_ok=True)
+    if os.path.exists(output_path):
+        print(f"Output file {output_path} already exists. Skipping...")
+        return
     # create environment to use for data processing
     env_meta = FileUtils.get_env_metadata_from_dataset(dataset_path=args.input)
     if env_meta['env_name'].startswith('PickPlace_'):
         camera_names=['birdview', 'agentview', 'robot0_eye_in_hand']
     elif env_meta['env_name'].startswith('Libero_'):
-        camera_names=['agentview', 'robot0_eye_in_hand']
+        # camera_names=['agentview', 'robot0_eye_in_hand']
+        camera_names=['birdview', 'agentview', 'sideview', 'robot0_eye_in_hand']
 
         from libero.libero import get_libero_path
         from libero.libero import benchmark
@@ -203,7 +213,8 @@ def dataset_states_to_obs(args):
         env_meta['env_kwargs']['bddl_file_name'] = task_bddl_file
         env_meta['env_kwargs']["camera_segmentations"] = "instance"
     else:
-        camera_names=['birdview', 'agentview', 'sideview', 'robot0_eye_in_hand']
+        # camera_names=['birdview', 'agentview', 'sideview', 'robot0_eye_in_hand']
+        camera_names = env_meta['env_kwargs'].get('camera_names', ['frontview', 'birdview', 'agentview', 'sideview', 'robot0_eye_in_hand'])
 
     ## dexmimicgen
     if args.num_robots == 2:
@@ -237,8 +248,6 @@ def dataset_states_to_obs(args):
     if args.n is not None:
         demos = demos[:args.n]
 
-    # output file in same directory as input file
-    output_path = args.output
     f_out = h5py.File(output_path, "w")
     data_grp = f_out.create_group("data")
     print("input file: {}".format(args.input))
@@ -342,12 +351,11 @@ if __name__ == "__main__":
         required=True,
         help="path to input hdf5 dataset",
     )
-    # name of hdf5 to write - it will be in the same directory as @dataset
+    # dir of hdf5 to write 
     parser.add_argument(
-        "--output",
+        "--output_dir",
         type=str,
         required=True,
-        help="name of output hdf5 dataset",
     )
 
     ## if output all pcd
@@ -452,4 +460,19 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    dataset_states_to_obs(args)
+    # If input is a directory, iterate over all .hdf5 files inside and process each
+    if os.path.isdir(args.input):
+        hdf5_files = [
+            os.path.join(args.input, fname)
+            for fname in sorted(os.listdir(args.input))
+            if fname.lower().endswith(".hdf5") and not fname.endswith("_pc_instance.hdf5")
+        ]
+        if len(hdf5_files) == 0:
+            print(f"No .hdf5 files found in directory: {args.input}")
+        for dataset_path in hdf5_files:
+            per_file_args = deepcopy(args)
+            per_file_args.input = dataset_path
+            print(f"\nProcessing dataset: {dataset_path}")
+            dataset_states_to_obs(per_file_args)
+    else:
+        dataset_states_to_obs(args)

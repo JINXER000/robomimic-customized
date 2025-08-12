@@ -53,8 +53,8 @@ def refactor_controller_config(robot, controller_config):
 
 class Libero_env_switchable(EnvRobosuite):
     def __init__(self, task_suite_name, task_name, robots = ['Panda'],
-                 cam_names = ["agentview", "robot0_eye_in_hand"],\
-                  W = 128, H = 128, controller_name = "OSC_POSE", abs_action = False,
+                 cam_names = ["agentview", "birdview", "robot0_eye_in_hand"],\
+                  W = 84, H = 84, controller_name = "OSC_POSE", abs_action = False,
                   postprocess_visual_obs = True, max_framerate = 25, max_timesteps = 500):
         
         robosuite_version_id = int(suite.__version__.split(".")[1])
@@ -296,7 +296,9 @@ class Libero_env_switchable(EnvRobosuite):
                 start = time.time()
 
                 action[count] = test_value
-                action = np.array([-0.876209485918424, 1.2561013815928623, 1.3308805441681182, -1.9343220594253552, -1.3210136402291082, 1.8487462748068064, -0.927032436745828, 1 ])
+                action = np.array([-2.98182931e-03, -1.60094372e-01, -8.98125289e-03,
+        -2.46575808e+00,  3.99778374e-04,  2.21021376e+00,
+         7.83424788e-01, 1 ])
                 if len(self.env.robots) > 1:
                     # total_action = np.tile(action, n)
                     total_action = np.concatenate((action, np.zeros(action.shape)), axis=-1)

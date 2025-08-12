@@ -39,8 +39,8 @@ except ImportError:
     MUJOCO_EXCEPTIONS = []
 
 ## depth cameras that used to construct instance pc
-D_CAM = ['agentview', 'birdview', 'frontview'] 
-OBJ_PC_SIZE = 256
+# D_CAM = ['agentview', 'birdview', 'frontview'] 
+# OBJ_PC_SIZE = 256
 
 def get_name2id(env):
     """
@@ -208,8 +208,13 @@ class EnvRobosuite(EB.EnvBase):
 
         if env_name.startswith('Libero_'):
             self.is_libero = True
+            # self.d_cams = ['agentview', 'birdview']
+            self.d_cams = ['agentview']
+            self.obj_pc_size=256
         else:
             self.is_libero = False
+            self.d_cams = ['agentview', 'birdview', 'frontview']
+            self.obj_pc_size=256
 
         ## if there is interested objects and segmentation is enabled, output instance pcd.
         if "camera_segmentations" in kwargs and kwargs["camera_segmentations"] == "instance":
@@ -312,7 +317,7 @@ class EnvRobosuite(EB.EnvBase):
         instance_pcds = {k:o3d.geometry.PointCloud() for k in self.interested_objects}
         name2id = get_name2id(self.env)
         for cam_idx, camera_name in enumerate(self.env.camera_names):
-            if camera_name not in D_CAM:
+            if camera_name not in self.d_cams:
                 continue
             
             cam_height = self.env.camera_heights[cam_idx]
@@ -345,7 +350,7 @@ class EnvRobosuite(EB.EnvBase):
 
                 instance_pcds[obj_name] += obj_pcd_o3d
         
-        obj_pc_size = OBJ_PC_SIZE
+        obj_pc_size = self.obj_pc_size
         pc_instance_dict = {}
         for obj_name, obj_pcd_raw in instance_pcds.items():
 
@@ -424,7 +429,7 @@ class EnvRobosuite(EB.EnvBase):
             if self.output_all_pcds:
                 all_pcds = o3d.geometry.PointCloud()
                 for cam_idx, camera_name in enumerate(self.env.camera_names):
-                    if camera_name not in D_CAM:
+                    if camera_name not in self.d_cams:
                         continue  
                     cam_height = self.env.camera_heights[cam_idx]
                     cam_width = self.env.camera_widths[cam_idx]
