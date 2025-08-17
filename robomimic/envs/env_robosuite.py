@@ -208,11 +208,12 @@ class EnvRobosuite(EB.EnvBase):
 
         if env_name.startswith('Libero_'):
             self.is_libero = True
-            # self.d_cams = ['agentview', 'birdview']
+            # self.d_cams = ['agentview', 'birdview', 'sideview']
             self.d_cams = ['agentview']
             self.obj_pc_size=256
         else:
             self.is_libero = False
+            # self.d_cams = ['agentview']
             self.d_cams = ['agentview', 'birdview', 'frontview']
             self.obj_pc_size=256
 
@@ -349,9 +350,11 @@ class EnvRobosuite(EB.EnvBase):
                 obj_pcd_o3d = np2o3d(obj_pcd_w, masked_color)
 
                 instance_pcds[obj_name] += obj_pcd_o3d
+
         
         obj_pc_size = self.obj_pc_size
         pc_instance_dict = {}
+        oobb_instance_dict = {}
         for obj_name, obj_pcd_raw in instance_pcds.items():
 
             ## filter pc
@@ -381,8 +384,174 @@ class EnvRobosuite(EB.EnvBase):
             obj_color = np.asarray(obj_pcd.colors)
             pc_instance_dict[f'{obj_name}_point_cloud'] = np.concatenate([obj_xyz, obj_color], 1)
 
-        return pc_instance_dict
+            obj_oobb =  obj_pcd.get_oriented_bounding_box()
+            oobb_instance_dict[f'{obj_name}_oobb'] = obj_oobb
 
+        return pc_instance_dict, oobb_instance_dict
+
+    def get_obstacle_pcd(self, all_points_6d, oobb_instance_dict):
+        # Compute obstacle point cloud by filtering out points that lie in any OOBB
+        obstacle_pcd = o3d.geometry.PointCloud()
+        obstacle_points = []
+        obstacle_colors = []
+        
+        # Get all points and colors from sampled_pcds
+        all_points = all_points_6d[:, :3]  # Extract xyz coordinates
+        all_colors = all_points_6d[:, 3:6]  # Extract color information
+        
+        # Check each point against all OOBBs
+        for i, point in enumerate(all_points):
+            ## filter out robot for libero
+            if point[0] < -0.1 :
+                continue
+
+            point_in_any_oobb = False
+            
+            # Check if point lies within any of the oriented bounding boxes
+            for obj_name in self.interested_objects:
+                if f'{obj_name}_oobb' in oobb_instance_dict:
+                    oobb = oobb_instance_dict[f'{obj_name}_oobb']
+                    # Check if point is inside the oriented bounding box
+                    if self._point_in_oriented_bbox(point, oobb):
+                    # if oobb.contains(o3d.utility.Vector3dVector([point])):
+                        point_in_any_oobb = True
+                        break
+            
+            # If point is not in any OOBB, add it to obstacle points
+            if not point_in_any_oobb:
+                obstacle_points.append(point)
+                obstacle_colors.append(all_colors[i])
+        
+        if len(obstacle_points) > 0:
+            obstacle_pcd.points = o3d.utility.Vector3dVector(np.array(obstacle_points))
+            obstacle_pcd.colors = o3d.utility.Vector3dVector(np.array(obstacle_colors))
+        else:
+            # Create fake points if no obstacle points found
+            obstacle_pcd.points = o3d.utility.Vector3dVector(np.array([[0., 0., 0.]]))
+            obstacle_pcd.colors = o3d.utility.Vector3dVector(np.array([[0., 0., 0.]]))
+        
+        # No need for consistency
+        obstacle_pts_num = 512
+        if len(obstacle_pcd.points) > obstacle_pts_num:
+            # Downsample to exactly 512 points
+            obstacle_pcd = obstacle_pcd.farthest_point_down_sample(obstacle_pts_num)
+        elif len(obstacle_pcd.points) < obstacle_pts_num* 0.3:
+            return None
+        
+        obstacle_xyz = np.asarray(obstacle_pcd.points)
+        obstacle_color = np.asarray(obstacle_pcd.colors)
+        
+        return np.concatenate([obstacle_xyz, obstacle_color], 1)
+    
+    def _point_in_oriented_bbox(self, point, oobb):
+        """
+        Check if a point lies inside an oriented bounding box.
+        
+        Args:
+            point (np.array): 3D point coordinates
+            oobb (o3d.geometry.OrientedBoundingBox): Oriented bounding box
+            
+        Returns:
+            bool: True if point is inside the OOBB, False otherwise
+        """
+        # Get the center and rotation of the OOBB
+        center = oobb.center
+        R = oobb.R  # Rotation matrix (3x3)
+        extent = oobb.extent  # Half-lengths of the box
+        
+        # Transform point to OOBB's local coordinate system
+        # Subtract center and apply inverse rotation
+        local_point = R.T @ (point - center)
+        
+        # Check if point is within the box bounds in local coordinates
+        # extent contains half-lengths, so we check against [-extent, +extent]
+        return (np.abs(local_point[0]) <= extent[0] and 
+                np.abs(local_point[1]) <= extent[1] and 
+                np.abs(local_point[2]) <= extent[2])
+
+    def get_all_pcd(self, di):
+        workspace = self.voxel_workspace
+
+        voxel_bound = workspace.T
+        voxel_size = 64
+
+        all_pcds = o3d.geometry.PointCloud()
+        for cam_idx, camera_name in enumerate(self.env.camera_names):
+            if camera_name not in self.d_cams:
+                continue  
+            cam_height = self.env.camera_heights[cam_idx]
+            cam_width = self.env.camera_widths[cam_idx]
+            ext_mat = get_camera_extrinsic_matrix(self.env.sim, camera_name)
+            int_mat = get_camera_intrinsic_matrix(self.env.sim, camera_name, cam_height, cam_width)
+            depth = di[f'{camera_name}_depth'][::-1]
+            depth = np.clip(depth, 0, 1)
+            depth = get_real_depth_map(self.env.sim, depth)
+            depth = depth[:, :, 0]
+            color = di[f'{camera_name}_image'][::-1]
+
+            cam_param = [int_mat[0, 0], int_mat[1, 1], int_mat[0, 2], int_mat[1, 2]]
+            mask = np.ones_like(depth, dtype=bool)
+            pcd = depth2fgpcd(depth, mask, cam_param)
+
+            # pose = np.linalg.inv(ext_mat)
+            pose = ext_mat
+            
+            trans_pcd = pose @ np.concatenate([pcd.T, np.ones((1, pcd.shape[0]))], axis=0)
+            trans_pcd = trans_pcd[:3, :].T
+
+            mask = (trans_pcd[:, 0] > workspace[0, 0]) * (trans_pcd[:, 0] < workspace[0, 1]) * (trans_pcd[:, 1] > workspace[1, 0]) * (trans_pcd[:, 1] < workspace[1, 1]) * (trans_pcd[:, 2] > workspace[2, 0]) * (trans_pcd[:, 2] < workspace[2, 1])
+
+            pcd_o3d = np2o3d(trans_pcd[mask], color.reshape(-1, 3)[mask].astype(np.float64) / 255)
+
+            all_pcds += pcd_o3d
+
+        voxel_grid = o3d.geometry.VoxelGrid.create_from_point_cloud_within_bounds(all_pcds, voxel_size=self.ws_size/voxel_size+1e-4, min_bound=voxel_bound[0], max_bound=voxel_bound[1])
+        voxels = voxel_grid.get_voxels()  # returns list of voxels
+        if len(voxels) == 0:
+            np_voxels = np.zeros([4, voxel_size, voxel_size, voxel_size], dtype=np.uint8)
+        else:
+            indices = np.stack(list(vx.grid_index for vx in voxels))
+            colors = np.stack(list(vx.color for vx in voxels))
+
+            mask = (indices > 0) * (indices < voxel_size)
+            indices = indices[mask.all(axis=1)]
+            colors = colors[mask.all(axis=1)]
+
+            np_voxels = np.zeros([4, voxel_size, voxel_size, voxel_size], dtype=np.uint8)
+            np_voxels[0, indices[:, 0], indices[:, 1], indices[:, 2]] = 1
+            np_voxels[1:, indices[:, 0], indices[:, 1], indices[:, 2]] = colors.T * 255
+
+        bounding_box = o3d.geometry.AxisAlignedBoundingBox(self.pc_workspace.T[0], self.pc_workspace.T[1])
+        cropped_pcd = all_pcds.crop(bounding_box)
+        if len(cropped_pcd.points) == 0:
+            # create fake points
+            cropped_pcd.points = o3d.utility.Vector3dVector(np.array([[0., 0., 0.]]))
+            cropped_pcd.colors = o3d.utility.Vector3dVector(np.array([[0., 0., 0.]]))
+        if len(cropped_pcd.points) < 1024:
+            # random upsample to 1024
+            num_pad = 1024 - len(cropped_pcd.points)
+            indices = np.random.choice(len(cropped_pcd.points), num_pad)
+            padded_xyz = np.asarray(cropped_pcd.points)[indices]
+            padded_color = np.asarray(cropped_pcd.colors)[indices]
+            xyz = np.concatenate([np.asarray(cropped_pcd.points), padded_xyz], 0)
+            color = np.concatenate([np.asarray(cropped_pcd.colors), padded_color], 0)
+            cropped_pcd = o3d.geometry.PointCloud()
+            cropped_pcd.points = o3d.utility.Vector3dVector(xyz)
+            cropped_pcd.colors = o3d.utility.Vector3dVector(color)
+        sampled_pcds = cropped_pcd.farthest_point_down_sample(1024)
+        xyz = np.asarray(sampled_pcds.points)
+        color = np.asarray(sampled_pcds.colors)
+
+        return {'voxels': np_voxels, 'point_cloud': np.concatenate([xyz, color], 1)}
+
+    def get_instance_and_obstacles_pcd(self, di):
+        pc_instance_dict, oobb_instance_dict = self.get_instance_pcd(di)
+        all_pcd_voxels = self.get_all_pcd(di)
+        obstacle_pcd = self.get_obstacle_pcd(all_pcd_voxels['point_cloud'], oobb_instance_dict)
+        output_dict = pc_instance_dict.copy()
+        if obstacle_pcd is not None:
+            output_dict['obstacle_pcd'] = obstacle_pcd
+        return output_dict
 
     def get_observation(self, di=None):
         """
@@ -412,137 +581,18 @@ class EnvRobosuite(EB.EnvBase):
             ret["object"] = np.array(di["object-state"])
 
         if self.env.use_camera_obs:
-            workspace = self.voxel_workspace
-
-            # voxel_bound = np.array([
-            #     [center[0] - ws_size/2, center[1] - ws_size/2, center[2] - 0.05],
-            #     [center[0] + ws_size/2, center[1] + ws_size/2, center[2] - 0.05 + ws_size],
-            # ])
-            voxel_bound = workspace.T
-            voxel_size = 64
 
             if self.output_instance_pcd:
-                pc_instance_dict = self.get_instance_pcd(di)
+                pc_instance_dict, _ = self.get_instance_pcd(di)
                 ret.update(pc_instance_dict)
 
             ## TODO: output obstacle pcds (all pcds that does not lie in OOBB of interested objects, and below gripper range)
             if self.output_all_pcds:
-                all_pcds = o3d.geometry.PointCloud()
-                for cam_idx, camera_name in enumerate(self.env.camera_names):
-                    if camera_name not in self.d_cams:
-                        continue  
-                    cam_height = self.env.camera_heights[cam_idx]
-                    cam_width = self.env.camera_widths[cam_idx]
-                    ext_mat = get_camera_extrinsic_matrix(self.env.sim, camera_name)
-                    int_mat = get_camera_intrinsic_matrix(self.env.sim, camera_name, cam_height, cam_width)
-                    depth = di[f'{camera_name}_depth'][::-1]
-                    depth = np.clip(depth, 0, 1)
-                    depth = get_real_depth_map(self.env.sim, depth)
-                    depth = depth[:, :, 0]
-                    color = di[f'{camera_name}_image'][::-1]
-                    # depth = ret[f'{camera_name}_depth'][:, :, 0]
-                    # color = ret[f'{camera_name}_image']
-                    # if camera_name != 'agentview':
-                    #     del ret[f'{camera_name}_depth']
-                    #     del ret[f'{camera_name}_image']
-                    cam_param = [int_mat[0, 0], int_mat[1, 1], int_mat[0, 2], int_mat[1, 2]]
-                    mask = np.ones_like(depth, dtype=bool)
-                    pcd = depth2fgpcd(depth, mask, cam_param)
+                all_pcd_voxels = self.get_all_pcd(di)
+                ret.update(all_pcd_voxels)
 
-                    # pose = np.linalg.inv(ext_mat)
-                    pose = ext_mat
-                    
-                    trans_pcd = pose @ np.concatenate([pcd.T, np.ones((1, pcd.shape[0]))], axis=0)
-                    trans_pcd = trans_pcd[:3, :].T
-
-                    mask = (trans_pcd[:, 0] > workspace[0, 0]) * (trans_pcd[:, 0] < workspace[0, 1]) * (trans_pcd[:, 1] > workspace[1, 0]) * (trans_pcd[:, 1] < workspace[1, 1]) * (trans_pcd[:, 2] > workspace[2, 0]) * (trans_pcd[:, 2] < workspace[2, 1])
-
-                    pcd_o3d = np2o3d(trans_pcd[mask], color.reshape(-1, 3)[mask].astype(np.float64) / 255)
-
-                    all_pcds += pcd_o3d
-
-                voxel_grid = o3d.geometry.VoxelGrid.create_from_point_cloud_within_bounds(all_pcds, voxel_size=self.ws_size/voxel_size+1e-4, min_bound=voxel_bound[0], max_bound=voxel_bound[1])
-                voxels = voxel_grid.get_voxels()  # returns list of voxels
-                if len(voxels) == 0:
-                    np_voxels = np.zeros([4, voxel_size, voxel_size, voxel_size], dtype=np.uint8)
-                else:
-                    indices = np.stack(list(vx.grid_index for vx in voxels))
-                    colors = np.stack(list(vx.color for vx in voxels))
-
-                    mask = (indices > 0) * (indices < voxel_size)
-                    indices = indices[mask.all(axis=1)]
-                    colors = colors[mask.all(axis=1)]
-
-                    np_voxels = np.zeros([4, voxel_size, voxel_size, voxel_size], dtype=np.uint8)
-                    np_voxels[0, indices[:, 0], indices[:, 1], indices[:, 2]] = 1
-                    np_voxels[1:, indices[:, 0], indices[:, 1], indices[:, 2]] = colors.T * 255
-
-                # np_voxels = np.moveaxis(np_voxels, [0, 1, 2, 3], [0, 3, 2, 1])
-                # np_voxels = np.flip(np_voxels, (1, 2))
-
-                # import matplotlib.pyplot as plt
-                # from mpl_toolkits.mplot3d import Axes3D
-
-                # # Create a 3D plot
-                # fig = plt.figure()
-                # ax = fig.add_subplot(111, projection='3d')
-                
-                # # indices = np.argwhere(np_voxels[0] != 0)
-                # # colors = np_voxels[1:, indices[:, 0], indices[:, 1], indices[:, 2]].T
-
-                # ax.scatter(indices[:, 0], indices[:, 1], indices[:, 2], color=colors, marker='s')
-
-                # # Set labels and show the plot
-                # ax.set_xlabel('X Axis')
-                # ax.set_ylabel('Y Axis')
-                # ax.set_zlabel('Z Axis')
-                # ax.set_xlim(0, 64)
-                # ax.set_ylim(0, 64)
-                # ax.set_zlim(0, 64)
-                # plt.savefig('test2.png')
-                # plt.close()
-
-                ret['voxels'] = np_voxels
-
-                bounding_box = o3d.geometry.AxisAlignedBoundingBox(self.pc_workspace.T[0], self.pc_workspace.T[1])
-                cropped_pcd = all_pcds.crop(bounding_box)
-                if len(cropped_pcd.points) == 0:
-                    # create fake points
-                    cropped_pcd.points = o3d.utility.Vector3dVector(np.array([[0., 0., 0.]]))
-                    cropped_pcd.colors = o3d.utility.Vector3dVector(np.array([[0., 0., 0.]]))
-                if len(cropped_pcd.points) < 1024:
-                    # random upsample to 1024
-                    num_pad = 1024 - len(cropped_pcd.points)
-                    indices = np.random.choice(len(cropped_pcd.points), num_pad)
-                    padded_xyz = np.asarray(cropped_pcd.points)[indices]
-                    padded_color = np.asarray(cropped_pcd.colors)[indices]
-                    xyz = np.concatenate([np.asarray(cropped_pcd.points), padded_xyz], 0)
-                    color = np.concatenate([np.asarray(cropped_pcd.colors), padded_color], 0)
-                    cropped_pcd = o3d.geometry.PointCloud()
-                    cropped_pcd.points = o3d.utility.Vector3dVector(xyz)
-                    cropped_pcd.colors = o3d.utility.Vector3dVector(color)
-                sampled_pcds = cropped_pcd.farthest_point_down_sample(1024)
-                xyz = np.asarray(sampled_pcds.points)
-                color = np.asarray(sampled_pcds.colors)
-
-                # import matplotlib.pyplot as plt
-                # from mpl_toolkits.mplot3d import Axes3D
-                # fig = plt.figure()
-                # ax = fig.add_subplot(111, projection='3d')
-
-                # # Scatter plot
-                # ax.scatter(xyz[:, 0], xyz[:, 1], xyz[:, 2], c=color, s=20)
-
-                # # Labels
-                # ax.set_xlabel('X Label')
-                # ax.set_ylabel('Y Label')
-                # ax.set_zlabel('Z Label')
-
-                # # Save the plot
-                # plt.savefig('1.png')
-                # plt.close()
-
-                ret['point_cloud'] = np.concatenate([xyz, color], 1)
+                # obstacle_pcd = self.get_obstacle_pcd(all_pcd_voxels['point_cloud'], oobb_instance_dict)
+                # ret['obstacle_pcd'] = obstacle_pcd
 
         if self._is_v1:
             for robot in self.env.robots:

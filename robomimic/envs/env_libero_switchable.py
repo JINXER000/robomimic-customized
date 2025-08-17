@@ -4,6 +4,8 @@ from typing import Dict
 import robosuite as suite
 from robosuite.controllers.composite.composite_controller_factory import refactor_composite_controller_config
 from robosuite.utils.input_utils import *
+from robosuite.utils.camera_utils import get_real_depth_map, get_camera_extrinsic_matrix, get_camera_intrinsic_matrix
+
 try:
     from env_robosuite import EnvRobosuite
 except ImportError:
@@ -11,6 +13,7 @@ except ImportError:
 from libero.libero import benchmark
 from libero.libero import get_libero_path
 
+from robomimic.utils.rerun_logger import RerunLogger
 import networkx as nx
 import os
 import json
@@ -49,13 +52,16 @@ def refactor_controller_config(robot, controller_config):
     controller_config["ndim"] = len(robot.robot_joints)
     return controller_config
 
-
+default_options = {
+    "robots": ["Panda"],
+    "camera_names": ["agentview", "birdview", "robot0_eye_in_hand"],
+    "camera_heights": 84,
+    "camera_widths": 84,
+    "camera_segmentations": "instance",
+}
 
 class Libero_env_switchable(EnvRobosuite):
-    def __init__(self, task_suite_name, task_name, robots = ['Panda'],
-                 cam_names = ["agentview", "birdview", "robot0_eye_in_hand"],\
-                  W = 84, H = 84, controller_name = "OSC_POSE", abs_action = False,
-                  postprocess_visual_obs = True, max_framerate = 25, max_timesteps = 500):
+    def __init__(self, task_suite_name, task_name, env_options = default_options, controller_name = "OSC_POSE", abs_action = False,postprocess_visual_obs = True, max_framerate = 25, max_timesteps = 500,  render_obs_keys=["agentview_image", "robot0_eye_in_hand_image"], initialize_logger = False):
         
         robosuite_version_id = int(suite.__version__.split(".")[1])
         assert robosuite_version_id >= 5, "Made for Robosuite V1.5 switchable version"
@@ -67,16 +73,13 @@ class Libero_env_switchable(EnvRobosuite):
         
         self.max_timesteps = max_timesteps
         self.max_framerate = max_framerate
-        self.options = {}
-        self.options["robots"] = robots
-        # self.options["env_name"] = env_name
-        self.options["camera_names"] = cam_names
-        self.options["camera_heights"] = H
-        self.options["camera_widths"] = W
-        self.options["camera_segmentations"] = "instance"
+
+        self.options = env_options.copy()
 
         self.env = None 
-
+        
+            
+        self.render_obs_keys = render_obs_keys
         default_controller_configs = self.init_controller_configs(controller_name, abs_action)
         self.options["controller_configs"] = default_controller_configs
         self.controller_configs = default_controller_configs
@@ -93,7 +96,7 @@ class Libero_env_switchable(EnvRobosuite):
         print(f"[info] retrieving task {self.task_id} from suite {self.task_suite_name},  \
              and the bddl file is {task_bddl_file}")
         self.options['bddl_file_name'] = task_bddl_file
-        self.options['robots'] = ['Panda']
+        # self.options['robots'] = ['Panda']
 
         super().__init__(
             env_name = "Libero_Tabletop_Manipulation",
@@ -105,6 +108,14 @@ class Libero_env_switchable(EnvRobosuite):
             # env_lang = None,
             **self.options
         )
+
+        if initialize_logger:
+            ext_mat = get_camera_extrinsic_matrix(self.env.sim, "agentview")
+            int_mat = get_camera_intrinsic_matrix(self.env.sim, "agentview", env_options['camera_widths'], env_options['camera_heights'])
+
+            # ext_mat = int_mat = None
+
+            self.rerun_logger_instance = RerunLogger(log_name=task_name, extrinsic = ext_mat, intrinsic= int_mat )
 
     
 
@@ -120,6 +131,11 @@ class Libero_env_switchable(EnvRobosuite):
 
     def step_ts(self, action):
         self.raw_obs, reward, done, info = self.env.step(action)
+        
+        # Log observations if logger is provided
+        if self.rerun_logger_instance is not None:
+            self.log_observations_with_rerun()
+        
         if self.lfd_alg is not None:
             self.obs = self.lfd_alg.get_observation(self.raw_obs)
             info["is_success"] = self.is_success()
@@ -229,10 +245,10 @@ class Libero_env_switchable(EnvRobosuite):
     def exit(self):
         self.env.close()
 
-    def replay_tamp_step(self, total_action):
+    def replay_tamp_step(self, total_action, rerun_logger_instance=None):
         start = time.time()
 
-        ts = self.step_ts(total_action)
+        ts = self.step_ts(total_action, rerun_logger_instance)
         self.env.render()
         # limit frame rate if necessary
         elapsed = time.time() - start
@@ -250,6 +266,25 @@ class Libero_env_switchable(EnvRobosuite):
             robot_jposes.append(jpose)
         robot_jposes = np.concatenate(robot_jposes, axis=0)
         return robot_jposes
+
+    def log_observations_with_rerun(self):
+        """Log current observations using the rerun logger."""
+                    
+        # # Log the observations
+        # self.rerun_logger_instance.log_timestep(self.raw_obs)
+        self.rerun_logger_instance.frame_count += 1
+        self.rerun_logger_instance.set_frame_time()
+
+        # Log images
+        for render_key in self.render_obs_keys:
+            self.rerun_logger_instance.update_img_obs(self.raw_obs[render_key], render_key)
+        
+        # Also log eef poses for each robot
+        for robot in self.env.robots:
+            robot_name = f'robot{robot.idn}'
+            eef_pos = self.raw_obs[f"{robot_name}_eef_pos"]
+            eef_quat = self.raw_obs[f"{robot_name}_eef_quat"]
+            self.rerun_logger_instance.update_eef_pose(robot_name, eef_pos, eef_quat)
 
     def test_controller(self, controller_name="OSC_POSE", abs_action=False):
 
@@ -277,7 +312,6 @@ class Libero_env_switchable(EnvRobosuite):
         steps_per_action = 75
         steps_per_rest = 75
 
-
         # To accommodate for multi-arm settings (e.g.: Baxter), we need to make sure to fill any extra action space
         # Get total number of arms being controlled
         n = 0
@@ -304,7 +338,12 @@ class Libero_env_switchable(EnvRobosuite):
                     total_action = np.concatenate((action, np.zeros(action.shape)), axis=-1)
                 else:
                     total_action = action
-                self.env.step(total_action)
+
+                self.raw_obs, reward, done, info = self.env.step(total_action)
+                # Log observations if logger is provided
+                if self.rerun_logger_instance is not None:
+                    self.log_observations_with_rerun()
+
                 self.env.render()
 
                 # limit frame rate if necessary
@@ -318,7 +357,12 @@ class Libero_env_switchable(EnvRobosuite):
                     total_action = np.tile(neutral, n)
                 else:
                     total_action = neutral
-                self.env.step(total_action)
+                # self.env.step(total_action)
+                self.raw_obs, reward, done, info = self.env.step(total_action)
+                # Log observations if logger is provided
+                if self.rerun_logger_instance is not None:
+                    self.log_observations_with_rerun()
+                                        
                 self.env.render()
 
                 # limit frame rate if necessary
@@ -329,8 +373,17 @@ class Libero_env_switchable(EnvRobosuite):
             count += 1
 
 
+
 if __name__ == "__main__":
     # env_name = to_camel_case("two_arm_three_piece_assembly")
     task_name  = 'pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate'
-    dmg_wrapper = Libero_env_switchable(task_suite_name='libero_spatial', task_name= task_name,  controller_name = "OSC_POSE", abs_action=False)
-    dmg_wrapper.test_controller("JOINT_POSITION", abs_action = True)
+
+    dmg_wrapper = Libero_env_switchable(task_suite_name='libero_spatial', task_name= task_name,  controller_name = "OSC_POSE", abs_action=False, initialize_logger=True)
+    
+    try:
+        # Test controller with logging
+        dmg_wrapper.test_controller("JOINT_POSITION", abs_action = True)
+        
+    finally:
+        # Clean up
+        dmg_wrapper.exit()
