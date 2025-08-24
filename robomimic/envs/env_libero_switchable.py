@@ -61,7 +61,7 @@ default_options = {
 }
 
 class Libero_env_switchable(EnvRobosuite):
-    def __init__(self, task_suite_name, task_name, env_options = default_options, controller_name = "OSC_POSE", abs_action = False,postprocess_visual_obs = True, max_framerate = 25, max_timesteps = 500,  render_obs_keys=["agentview_image", "robot0_eye_in_hand_image"], initialize_logger = False):
+    def __init__(self, task_suite_name, task_name, env_options = default_options, controller_name = "OSC_POSE", abs_action = False, postprocess_visual_obs = True, max_framerate = 25, max_timesteps = 500,  render_obs_keys=["agentview_image", "robot0_eye_in_hand_image"], env_name ="Libero_Tabletop_Manipulation", initialize_logger = False):
         
         robosuite_version_id = int(suite.__version__.split(".")[1])
         assert robosuite_version_id >= 5, "Made for Robosuite V1.5 switchable version"
@@ -77,7 +77,7 @@ class Libero_env_switchable(EnvRobosuite):
         self.options = env_options.copy()
 
         self.env = None 
-        
+        self.last_action = None
             
         self.render_obs_keys = render_obs_keys
         default_controller_configs = self.init_controller_configs(controller_name, abs_action)
@@ -99,7 +99,7 @@ class Libero_env_switchable(EnvRobosuite):
         # self.options['robots'] = ['Panda']
 
         super().__init__(
-            env_name = "Libero_Tabletop_Manipulation",
+            env_name = env_name,
             render = True,
             render_offscreen = True,
             use_image_obs = True,
@@ -117,7 +117,8 @@ class Libero_env_switchable(EnvRobosuite):
 
             self.rerun_logger_instance = RerunLogger(log_name=task_name, extrinsic = ext_mat, intrinsic= int_mat )
 
-    
+        else:
+            self.rerun_logger_instance = None
 
     def reset_ts(self):
         self.raw_obs = self.env.reset()
@@ -130,6 +131,7 @@ class Libero_env_switchable(EnvRobosuite):
         return init_ts
 
     def step_ts(self, action):
+        self.last_action = action
         self.raw_obs, reward, done, info = self.env.step(action)
         
         # Log observations if logger is provided
@@ -206,7 +208,8 @@ class Libero_env_switchable(EnvRobosuite):
         return updated_controller_configs
 
         
-        
+    def set_bc_controller(self, controller_name="OSC_POSE", abs_action=False):
+        print("Dummy update, as no bc in libero_tasks")
     
     def update_controllers(self, controller_name="OSC_POSE", abs_action=False):
 
@@ -245,10 +248,10 @@ class Libero_env_switchable(EnvRobosuite):
     def exit(self):
         self.env.close()
 
-    def replay_tamp_step(self, total_action, rerun_logger_instance=None):
+    def replay_tamp_step(self, total_action):
         start = time.time()
 
-        ts = self.step_ts(total_action, rerun_logger_instance)
+        ts = self.step_ts(total_action)
         self.env.render()
         # limit frame rate if necessary
         elapsed = time.time() - start
@@ -256,6 +259,10 @@ class Libero_env_switchable(EnvRobosuite):
         if diff > 0:
             time.sleep(diff)
         return ts
+    
+    ## as no bc, we replay the last action
+    def inference_once(self):
+        self.replay_tamp_step(self.last_action)
 
     def get_cur_jpose(self):
         cur_obs = self.env._get_observations(force_update = True)
@@ -376,9 +383,10 @@ class Libero_env_switchable(EnvRobosuite):
 
 if __name__ == "__main__":
     # env_name = to_camel_case("two_arm_three_piece_assembly")
-    task_name  = 'pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate'
+    # task_name  = 'pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate'
+    task_name = 'pick_up_the_alphabet_soup_and_place_it_in_the_basket'
 
-    dmg_wrapper = Libero_env_switchable(task_suite_name='libero_spatial', task_name= task_name,  controller_name = "OSC_POSE", abs_action=False, initialize_logger=True)
+    dmg_wrapper = Libero_env_switchable(env_name = 'Libero_Floor_Manipulation',  task_suite_name='libero_object', task_name= task_name,  controller_name = "OSC_POSE", abs_action=False, initialize_logger=False)
     
     try:
         # Test controller with logging

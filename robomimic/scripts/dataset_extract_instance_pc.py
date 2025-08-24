@@ -84,9 +84,9 @@ def extract_trajectory(
     if env_meta['env_name'].startswith('PickPlace_'):
         camera_names=['birdview', 'agentview', 'robot0_eye_in_hand']
     elif env_meta['env_name'].startswith('Libero_'):
-        camera_names=['birdview', 'agentview', 'robot0_eye_in_hand']
+        camera_names=['agentview', 'robot0_eye_in_hand']
     else: ## mimicgen, dexmimicgen
-        camera_names=['frontview', 'birdview', 'agentview', 'sideview', 'robot0_eye_in_hand']
+        camera_names=['frontview', 'birdview', 'agentview',  'robot0_eye_in_hand'] # sideview
     ## dexmimicgen
     if args.num_robots == 2:
         camera_names.append('robot1_eye_in_hand')
@@ -115,6 +115,9 @@ def extract_trajectory(
     traj_len = states.shape[0]
     # iteration variable @t is over "next obs" indices
     for t in range(1, traj_len + 1):
+
+        # if t == 75:
+        #     print("timestep 75")
 
         # get next observation
         if t == traj_len:
@@ -191,8 +194,8 @@ def dataset_states_to_obs(args):
     if env_meta['env_name'].startswith('PickPlace_'):
         camera_names=['birdview', 'agentview', 'robot0_eye_in_hand']
     elif env_meta['env_name'].startswith('Libero_'):
-        # camera_names=['agentview', 'robot0_eye_in_hand']
-        camera_names=['birdview', 'agentview', 'sideview', 'robot0_eye_in_hand']
+        camera_names=['agentview', 'robot0_eye_in_hand']
+        # camera_names=['birdview', 'agentview', 'sideview', 'robot0_eye_in_hand']
 
         from libero.libero import get_libero_path
         from libero.libero import benchmark
@@ -253,6 +256,9 @@ def dataset_states_to_obs(args):
     print("input file: {}".format(args.input))
     print("output file: {}".format(output_path))
 
+    # debug_ep_id = 20
+    debug_ep_id = None
+
     total_samples = 0
     for i in range(0, len(demos), num_workers):
         end = min(i + num_workers, len(demos))
@@ -260,6 +266,11 @@ def dataset_states_to_obs(args):
         states_list = []
         actions_list = []
         for j in range(i, end):
+
+            # debug
+            if debug_ep_id is not None and debug_ep_id != j:
+                continue
+
             ep = demos[j]
             # prepare initial state to reload from
             states = f["data/{}/states".format(ep)][()]
@@ -272,8 +283,15 @@ def dataset_states_to_obs(args):
             states_list.append(states)
             actions_list.append(actions)
             
-        with multiprocessing.Pool(num_workers) as pool:
-            trajs = pool.map(worker, [[env_meta, args, initial_state_list[j], states_list[j], actions_list[j]] for j in range(len(initial_state_list))]) 
+        if debug_ep_id is not None:
+
+            if len(states_list) > 0:
+                trajs =worker([env_meta, args, initial_state_list[0], states_list[0], actions_list[0]])
+            else:
+                continue
+        else:
+            with multiprocessing.Pool(num_workers) as pool:
+                trajs = pool.map(worker, [[env_meta, args, initial_state_list[j], states_list[j], actions_list[j]] for j in range(len(initial_state_list))]) 
 
         for j, ind in enumerate(range(i, end)):
             ep = demos[ind]
@@ -293,7 +311,8 @@ def dataset_states_to_obs(args):
             ep_data_grp.create_dataset("states", data=np.array(traj["states"]))
             ep_data_grp.create_dataset("rewards", data=np.array(traj["rewards"]))
             ep_data_grp.create_dataset("dones", data=np.array(traj["dones"]))
-            ignore_keys = ['depth', 'segment']
+            # ignore_keys = ['depth', 'segment']
+            ignore_keys = []
             for k in traj["obs"]:
                 ignore = False
                 for ignore_key in ignore_keys:
