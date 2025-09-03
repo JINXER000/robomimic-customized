@@ -57,6 +57,9 @@ class RerunLogger():
             # Set the world coordinate system
             rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
         
+            # Log a transform; the viewer will render an axis gizmo of the given length
+            rr.log("world/origin", rr.Transform3D(axis_length=10.0))  # 1 meter
+
             # Set up the camera entity with a transform
             # Convert rotation matrix to quaternion and ensure it's in the right format
             ext_quat = R.from_matrix(extrinsic[:3, :3]).as_quat()
@@ -64,7 +67,7 @@ class RerunLogger():
             ext_quat_list = ext_quat.tolist()
             rr.log(self.primary_camera_entity, rr.Transform3D(translation=extrinsic[:3, 3], rotation=rr.Quaternion(xyzw=ext_quat_list)), static=True)
             # You'll need to set the camera intrinsics when you have them
-            rr.log(self.primary_camera_entity, rr.Pinhole(image_from_camera=intrinsic, resolution=[128, 128]))
+            rr.log(self.primary_camera_entity, rr.Pinhole(image_from_camera=intrinsic, resolution=[84, 84]))
         else:
             # Initialize without camera setup
             rr.script_setup(default_args, log_name)
@@ -103,8 +106,8 @@ class RerunLogger():
             f"world/annotations/{robot_name}/eef_trajectory",
             rr.Points3D(
                 positions=self.trajectories[robot_name],
-                colors=[25, 70, 100] * len(self.trajectories[robot_name]),  
-                radii=[0.005] * len(self.trajectories[robot_name])  # Same radius for all points
+                colors=[250, 70, 100] * len(self.trajectories[robot_name]),  
+                radii=[0.01] * len(self.trajectories[robot_name])  # Same radius for all points
             ),
         )
     

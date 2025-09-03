@@ -57,7 +57,7 @@ from robomimic.envs.env_base import EnvBase
 import robomimic.envs.env_robosuite
 import multiprocessing
 multiprocessing.set_start_method('spawn', force=True)
-
+import robosuite
 
 
 def extract_trajectory(
@@ -191,6 +191,9 @@ def dataset_states_to_obs(args):
         return
     # create environment to use for data processing
     env_meta = FileUtils.get_env_metadata_from_dataset(dataset_path=args.input)
+
+
+
     if env_meta['env_name'].startswith('PickPlace_'):
         camera_names=['birdview', 'agentview', 'robot0_eye_in_hand']
     elif env_meta['env_name'].startswith('Libero_'):
@@ -199,7 +202,7 @@ def dataset_states_to_obs(args):
 
         from libero.libero import get_libero_path
         from libero.libero import benchmark
-        from libero.libero.envs import OffScreenRenderEnv
+        # from libero.libero.envs import OffScreenRenderEnv
 
         benchmark_dict = benchmark.get_benchmark_dict()
         task_suite_name = args.dataset_type # can also choose libero_spatial, libero_object, etc.
@@ -215,6 +218,9 @@ def dataset_states_to_obs(args):
         env_meta['bddl_file'] = task_bddl_file
         env_meta['env_kwargs']['bddl_file_name'] = task_bddl_file
         env_meta['env_kwargs']["camera_segmentations"] = "instance"
+
+        robots = env_meta['env_kwargs']['robots'][0]
+        sides = ['right']
     else:
         # camera_names=['birdview', 'agentview', 'sideview', 'robot0_eye_in_hand']
         camera_names = env_meta['env_kwargs'].get('camera_names', ['frontview', 'birdview', 'agentview', 'sideview', 'robot0_eye_in_hand'])
@@ -222,9 +228,25 @@ def dataset_states_to_obs(args):
     ## dexmimicgen
     if args.num_robots == 2:
         env_meta['env_kwargs']["camera_segmentations"] = "instance"
+        robots = env_meta['env_kwargs']['robots']
+        sides = ["right", "left"]
 
     env_meta['env_kwargs']['output_all_pcds'] = args.output_all_pcds
         
+    ## revise controller config for V1.5.1
+    robosuite_version_id = int(robosuite.__version__.split(".")[1])
+    if robosuite_version_id >= 5:
+        from robosuite.controllers.composite.composite_controller_factory import refactor_composite_controller_config
+        # Convert to composite controller config format
+        updated_controller_configs = refactor_composite_controller_config(
+            env_meta['env_kwargs']['controller_configs'], 
+            robots,
+            sides,
+        )
+        updated_controller_configs["type"] = "SWITCHABLE"
+
+        env_meta['env_kwargs']['controller_configs'] = updated_controller_configs
+
     env = EnvUtils.create_env_for_data_processing(
         env_meta=env_meta,
         camera_names=camera_names, 
@@ -311,8 +333,8 @@ def dataset_states_to_obs(args):
             ep_data_grp.create_dataset("states", data=np.array(traj["states"]))
             ep_data_grp.create_dataset("rewards", data=np.array(traj["rewards"]))
             ep_data_grp.create_dataset("dones", data=np.array(traj["dones"]))
-            # ignore_keys = ['depth', 'segment']
-            ignore_keys = []
+            ignore_keys = ['depth', 'segment']
+            # ignore_keys = []
             for k in traj["obs"]:
                 ignore = False
                 for ignore_key in ignore_keys:

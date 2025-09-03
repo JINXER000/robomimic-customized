@@ -115,15 +115,18 @@ def get_d_cams(env_name):
     # """
     if env_name.startswith('Libero_'):
         return ['agentview']
+        # return ['agentview', 'robot0_eye_in_hand'] 
     else:
         return ['agentview', 'birdview', 'frontview']  ## 'frontview', 'sideview'
 
-def is_cam_used(cam_name):
-    return True
-    # if 'eye_in_hand' in cam_name:
-    #     return False
-    # else:
-    #     return True
+# def is_cam_used(env, cam_name):
+#     if 'Libero_' in env._env_name:
+#         return True
+    
+#     d_cams = get_d_cams(env._env_name)
+#     if cam_name in d_cams:
+#         return True
+#     return False
 
     
 class EnvRobosuite(EB.EnvBase):
@@ -214,18 +217,21 @@ class EnvRobosuite(EB.EnvBase):
         # pc_center = np.array([0, 0, 0.7])
         voxel_center = np.array([0, 0, 0.03])
         pc_center = np.array([0, 0, 0.03])
-        if hasattr(self.env, 'table_offset'):
+        if hasattr(self.env, 'workspace_offset'):
             # voxel_center[:2] = self.env.table_offset[:2]
-            pc_center = np.array(self.env.table_offset)
-            voxel_center = pc_center
-            pc_center[2] = pc_center[2] + 0.02
+            pc_center = np.array(self.env.workspace_offset)
+        elif hasattr(self.env, 'table_offset'):
+             pc_center = np.array(self.env.table_offset)
+
+        pc_center[2] = pc_center[2] + 0.02  #table thickness related to env.z_offset
+        voxel_center = pc_center
         self.ws_size = 0.6
-        if env_name.startswith('Kitchen_'):
-            self.ws_size = 0.7
-            pc_center = self.env.table_offset
-        elif env_name.startswith('PickPlace_'):
-            pc_center = np.array([0, 0, 0.83])
-            self.ws_size = 1.1
+        # if env_name.startswith('Kitchen_'):
+        #     self.ws_size = 0.7
+        #     pc_center = self.env.table_offset
+        # elif env_name.startswith('PickPlace_'):
+        #     pc_center = np.array([0, 0, 0.83])
+        #     self.ws_size = 1.1
 
         self.voxel_workspace = np.array([
             [voxel_center[0] - self.ws_size/2, voxel_center[0] + self.ws_size/2],
@@ -238,10 +244,10 @@ class EnvRobosuite(EB.EnvBase):
             [pc_center[2], pc_center[2] + self.ws_size*0.4]  ## TODO: filter out gripper pc
         ])
 
-        self.obj_pc_size=512
+        self.obj_pc_size= 512
         self.all_pc_size = 1024
-        self.obstacle_pc_size = 512
-        # self.d_cams = get_d_cams(env_name)
+        self.obstacle_pc_size = 1024
+        self.d_cams = get_d_cams(env_name)
 
         if env_name.startswith('Libero_'):
             self.is_libero = True
@@ -345,14 +351,14 @@ class EnvRobosuite(EB.EnvBase):
         else:
             raise NotImplementedError("mode={} is not implemented".format(mode))
 
-    def get_instance_pcd(self, di):
+    def get_instance_pcd(self, di, require_downsample = True):
         instance_pcds = {k:o3d.geometry.PointCloud() for k in self.interested_objects}
         name2id = get_name2id(self.env)
         for cam_idx, camera_name in enumerate(self.env.camera_names):
-            # if camera_name not in self.d_cams:
-            #     continue
-            if not is_cam_used(camera_name):
+            if camera_name not in self.d_cams:
                 continue
+            # if not is_cam_used(self.env, camera_name):
+            #     continue
             
             cam_height = self.env.camera_heights[cam_idx]
             cam_width = self.env.camera_widths[cam_idx]
@@ -414,7 +420,8 @@ class EnvRobosuite(EB.EnvBase):
                 obj_pcd.points = o3d.utility.Vector3dVector(xyz)
                 obj_pcd.colors = o3d.utility.Vector3dVector(color)
             
-            obj_pcd = obj_pcd.farthest_point_down_sample(obj_pc_size)
+            if require_downsample:
+                obj_pcd = obj_pcd.farthest_point_down_sample(obj_pc_size)
 
             obj_xyz = np.asarray(obj_pcd.points)
             obj_color = np.asarray(obj_pcd.colors)
@@ -424,26 +431,29 @@ class EnvRobosuite(EB.EnvBase):
 
         return pc_instance_dict, kdtree_instance_dict
 
-    def in_rbt_body(self, di, point, rbt_radius = 0.5):
+    def in_rbt_body(self, di, point, rbt_radius = 0.2):
         robot_pose = self.env.robots[0].base_pos
         
         if np.linalg.norm(point[:2] - robot_pose[:2]) < rbt_radius:
             return True
         
         eef_pos = di['robot0_eef_pos']
-        if np.linalg.norm(point - eef_pos) < 0.2:
+        if np.linalg.norm(point - eef_pos) < 0.1:
             return True
         return False
 
     def get_obstacle_pcd(self, di, all_points_6d, kdtree_instance_dict):
-        # Compute obstacle point cloud by filtering out points that lie in any OOBB
+        # Compute obstacle point cloud by filtering out points that lie in any interested objs
         obstacle_pcd = o3d.geometry.PointCloud()
-        # obstacle_points = set()
-        # obstacle_colors = set()
         
         # Get all points and colors from sampled_pcds
         all_points = all_points_6d[:, :3]  # Extract xyz coordinates
         all_colors = all_points_6d[:, 3:6]  # Extract color information
+
+        ## filter out points that near the robot base and eef
+        not_rbt_mask = np.array([not self.in_rbt_body(di, p) for p in all_points])
+        all_points = all_points[not_rbt_mask]
+        all_colors = all_colors[not_rbt_mask]
 
         far_mask = np.ones(len(all_points), dtype=bool)
         for obj_kdt_name, instance_kdt in kdtree_instance_dict.items():
@@ -468,7 +478,7 @@ class EnvRobosuite(EB.EnvBase):
         
         if len(obstacle_pcd.points) > self.obstacle_pc_size:
             obstacle_pcd = obstacle_pcd.farthest_point_down_sample(self.obstacle_pc_size)
-        elif len(obstacle_pcd.points) < self.obstacle_pc_size* 0.2:
+        elif len(obstacle_pcd.points) < self.obstacle_pc_size* 0.1:
             print(f"Warning: Obstacle point cloud has too few points ({len(obstacle_pcd.points)}), not enough to sample {self.obstacle_pc_size}.")
             return None
         
@@ -511,10 +521,10 @@ class EnvRobosuite(EB.EnvBase):
 
         all_pcds = o3d.geometry.PointCloud()
         for cam_idx, camera_name in enumerate(self.env.camera_names):
-            # if camera_name not in self.d_cams:
-            #     continue  
-            if not is_cam_used(camera_name):
-                continue
+            if camera_name not in self.d_cams:
+                continue  
+            # if not is_cam_used(camera_name):
+            #     continue
             cam_height = self.env.camera_heights[cam_idx]
             cam_width = self.env.camera_widths[cam_idx]
             ext_mat = get_camera_extrinsic_matrix(self.env.sim, camera_name)
@@ -580,8 +590,8 @@ class EnvRobosuite(EB.EnvBase):
 
         return {'voxels': np_voxels, 'point_cloud': np.concatenate([xyz, color], 1)}
 
-    def get_instance_and_obstacles_pcd(self, di):
-        pc_instance_dict, kdtree_instance_dict = self.get_instance_pcd(di)
+    def get_instance_and_obstacles_pcd(self, di, require_downsample=True):
+        pc_instance_dict, kdtree_instance_dict = self.get_instance_pcd(di, require_downsample=require_downsample)
         all_pcd_voxels = self.get_all_pcd(di)
         # ag_img = di['robot0_eye_in_hand_image']
         # import cv2

@@ -77,7 +77,7 @@ class Libero_env_switchable(EnvRobosuite):
         self.options = env_options.copy()
 
         self.env = None 
-        self.last_action = None
+        self.last_action = None ## NOTE: absolute joint pose action
             
         self.render_obs_keys = render_obs_keys
         default_controller_configs = self.init_controller_configs(controller_name, abs_action)
@@ -286,6 +286,8 @@ class Libero_env_switchable(EnvRobosuite):
         for render_key in self.render_obs_keys:
             self.rerun_logger_instance.update_img_obs(self.raw_obs[render_key], render_key)
         
+        self.rerun_logger_instance.set_frame_time()
+
         # Also log eef poses for each robot
         for robot in self.env.robots:
             robot_name = f'robot{robot.idn}'
@@ -386,7 +388,7 @@ if __name__ == "__main__":
     # task_name  = 'pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate'
     task_name = 'pick_up_the_alphabet_soup_and_place_it_in_the_basket'
 
-    dmg_wrapper = Libero_env_switchable(env_name = 'Libero_Floor_Manipulation',  task_suite_name='libero_object', task_name= task_name,  controller_name = "OSC_POSE", abs_action=False, initialize_logger=False)
+    dmg_wrapper = Libero_env_switchable(env_name = 'Libero_Floor_Manipulation',  task_suite_name='libero_object', task_name= task_name,  controller_name = "OSC_POSE", abs_action=False, initialize_logger=True)
     
     try:
         # Test controller with logging
