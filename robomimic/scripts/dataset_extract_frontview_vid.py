@@ -1,48 +1,4 @@
-"""
-Script to extract observations from low-dimensional simulation states in a robosuite dataset.
 
-Args:
-    dataset (str): path to input hdf5 dataset
-
-    output_name (str): name of output hdf5 dataset
-
-    n (int): if provided, stop after n trajectories are processed
-
-    shaped (bool): if flag is set, use dense rewards
-
-    camera_names (str or [str]): camera name(s) to use for image observations. 
-        Leave out to not use image observations.
-
-    camera_height (int): height of image observation.
-
-    camera_width (int): width of image observation
-
-    done_mode (int): how to write done signal. If 0, done is 1 whenever s' is a success state.
-        If 1, done is 1 at the end of each trajectory. If 2, both.
-
-    copy_rewards (bool): if provided, copy rewards from source file instead of inferring them
-
-    copy_dones (bool): if provided, copy dones from source file instead of inferring them
-
-Example usage:
-    
-    # extract low-dimensional observations
-    python dataset_states_to_obs.py --dataset /path/to/demo.hdf5 --output_name low_dim.hdf5 --done_mode 2
-    
-    # extract 84x84 image observations
-    python dataset_states_to_obs.py --dataset /path/to/demo.hdf5 --output_name image.hdf5 \
-        --done_mode 2 --camera_names agentview robot0_eye_in_hand --camera_height 84 --camera_width 84
-
-    # (space saving option) extract 84x84 image observations with compression and without 
-    # extracting next obs (not needed for pure imitation learning algos)
-    python dataset_states_to_obs.py --dataset /path/to/demo.hdf5 --output_name image.hdf5 \
-        --done_mode 2 --camera_names agentview robot0_eye_in_hand --camera_height 84 --camera_width 84 \
-        --compress --exclude-next-obs
-
-    # use dense rewards, and only annotate the end of trajectories with done signal
-    python dataset_states_to_obs.py --dataset /path/to/demo.hdf5 --output_name image_dense_done_1.hdf5 \
-        --done_mode 1 --dense --camera_names agentview robot0_eye_in_hand --camera_height 84 --camera_width 84
-"""
 import os
 import json
 import h5py
@@ -57,40 +13,22 @@ from robomimic.envs.env_base import EnvBase
 import robomimic.envs.env_robosuite
 import multiprocessing
 multiprocessing.set_start_method('spawn', force=True)
+import imageio
 import robosuite
 
-
-def extract_trajectory(
+def extract_vid(
     env_meta,
     args, 
     initial_state, 
     states, 
     actions,
+    vid_path,
 ):
-    """
-    Helper function to extract observations, rewards, and dones along a trajectory using
-    the simulator environment.
 
-    Args:
-        env (instance of EnvBase): environment
-        initial_state (dict): initial simulation state to load
-        states (np.array): array of simulation states to load to extract information
-        actions (np.array): array of actions
-        done_mode (int): how to write done signal. If 0, done is 1 whenever s' is a 
-            success state. If 1, done is 1 at the end of each trajectory. 
-            If 2, do both.
-    """
     done_mode = args.done_mode
-    if env_meta['env_name'].startswith('PickPlace_'):
-        camera_names=['birdview', 'agentview', 'robot0_eye_in_hand']
-    elif env_meta['env_name'].startswith('Libero_'):
-        camera_names=['agentview', 'robot0_eye_in_hand']
-        # camera_names.append("birdview")
-    else: ## mimicgen, dexmimicgen
-        camera_names=['frontview', 'birdview', 'agentview',  'robot0_eye_in_hand', 'sideview'] # sideview
-    ## dexmimicgen
-    if args.num_robots == 2:
-        camera_names.append('robot1_eye_in_hand')
+
+    camera_names = ['agentview']
+ 
     env = EnvUtils.create_env_for_data_processing(
         env_meta=env_meta,
         camera_names=camera_names, 
@@ -104,21 +42,10 @@ def extract_trajectory(
     env.reset()
     obs = env.reset_to(initial_state)
 
-    traj = dict(
-        obs=[], 
-        next_obs=[], 
-        rewards=[], 
-        dones=[], 
-        actions=np.array(actions), 
-        states=np.array(states), 
-        initial_state_dict=initial_state,
-    )
+    video_writer = imageio.get_writer(vid_path, fps=20)
     traj_len = states.shape[0]
     # iteration variable @t is over "next obs" indices
     for t in range(1, traj_len + 1):
-
-        # if t == 196:
-        #     print("timestep 75")
 
         # get next observation
         if t == traj_len:
@@ -128,78 +55,48 @@ def extract_trajectory(
             # reset to simulator state to get observation
             next_obs = env.reset_to({"states" : states[t]})
 
-        # infer reward signal
-        # note: our tasks use reward r(s'), reward AFTER transition, so this is
-        #       the reward for the current timestep
-        r = env.get_reward()
-
-        # infer done signal
-        done = False
-        if (done_mode == 1) or (done_mode == 2):
-            # done = 1 at end of trajectory
-            done = done or (t == traj_len)
-        if (done_mode == 0) or (done_mode == 2):
-            # done = 1 when s' is task success state
-            done = done or env.is_success()["task"]
-        done = int(done)
-
-        # collect transition
-        traj["obs"].append(obs)
-        traj["next_obs"].append(next_obs)
-        traj["rewards"].append(r)
-        traj["dones"].append(done)
+        # TODO: record video
+        img_key = 'agentview_image' if 'agentview_image' in obs else 'agentview_rgb'
+        front_img = obs[img_key]
+        video_writer.append_data(front_img)
 
         # update for next iter
         obs = deepcopy(next_obs)
 
-    # convert list of dict to dict of list for obs dictionaries (for convenient writes to hdf5 dataset)
-    traj["obs"] = TensorUtils.list_of_flat_dict_to_dict_of_list(traj["obs"])
-    traj["next_obs"] = TensorUtils.list_of_flat_dict_to_dict_of_list(traj["next_obs"])
+    video_writer.close()
 
-    # list to numpy array
-    for k in traj:
-        if k == "initial_state_dict":
-            continue
-        if isinstance(traj[k], dict):
-            for kp in traj[k]:
-                traj[k][kp] = np.array(traj[k][kp])
-        else:
-            traj[k] = np.array(traj[k])
-
-    return traj
+    return video_writer
 
 def worker(x):
-    env_meta, args, initial_state, states, actions = x
-    traj = extract_trajectory(
+    env_meta, args, initial_state, states, actions, output_path = x
+
+    if os.path.exists(output_path):
+        print(f"Output dir {output_path} already exists. Skipping...")
+        return 
+    
+    video_writer = extract_vid(
         env_meta=env_meta,
         args=args,
         initial_state=initial_state, 
         states=states, 
         actions=actions,
+        vid_path=output_path,
     )
-    return traj
+    return 
 
-def dataset_states_to_obs(args):
+def dataset_to_vids(args):
     num_workers = args.num_workers
     # Determine output path early and skip if it already exists to avoid creating rendering contexts
     input_file_name = os.path.basename(args.input)
-    output_path = os.path.join(args.output_dir, input_file_name.replace(".hdf5", "_pc_instance.hdf5"))
-    parent_dir = os.path.dirname(output_path)
-    if parent_dir and not os.path.exists(parent_dir):
-        os.makedirs(parent_dir, exist_ok=True)
-    if os.path.exists(output_path):
-        print(f"Output file {output_path} already exists. Skipping...")
-        return
+    output_dir = os.path.join(args.output_dir, input_file_name.replace(".hdf5", "vids"))
+    if output_dir and not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+
     # create environment to use for data processing
     env_meta = FileUtils.get_env_metadata_from_dataset(dataset_path=args.input)
 
 
-
-    if env_meta['env_name'].startswith('PickPlace_'):
-        camera_names=['birdview', 'agentview', 'robot0_eye_in_hand']
-    elif env_meta['env_name'].startswith('Libero_'):
-        camera_names=['agentview', 'robot0_eye_in_hand']
-        camera_names.append('birdview')
+    if env_meta['env_name'].startswith('Libero_'):
 
         from libero.libero import get_libero_path
         from libero.libero import benchmark
@@ -218,21 +115,17 @@ def dataset_states_to_obs(args):
 
         env_meta['bddl_file'] = task_bddl_file
         env_meta['env_kwargs']['bddl_file_name'] = task_bddl_file
-        env_meta['env_kwargs']["camera_segmentations"] = "instance"
 
         robots = env_meta['env_kwargs']['robots'][0]
         sides = ['right']
-    else:
-        # camera_names=['birdview', 'agentview', 'sideview', 'robot0_eye_in_hand']
-        camera_names = env_meta['env_kwargs'].get('camera_names', ['frontview', 'birdview', 'agentview', 'sideview', 'robot0_eye_in_hand'])
+
 
     ## dexmimicgen
     if args.num_robots == 2:
-        env_meta['env_kwargs']["camera_segmentations"] = "instance"
         robots = env_meta['env_kwargs']['robots']
         sides = ["right", "left"]
 
-    env_meta['env_kwargs']['output_all_pcds'] = args.output_all_pcds
+    camera_names=['agentview']
         
     ## revise controller config for V1.5.1
     robosuite_version_id = int(robosuite.__version__.split(".")[1])
@@ -274,16 +167,7 @@ def dataset_states_to_obs(args):
     if args.n is not None:
         demos = demos[:args.n]
 
-    f_out = h5py.File(output_path, "w")
-    data_grp = f_out.create_group("data")
     print("input file: {}".format(args.input))
-    print("output file: {}".format(output_path))
-
-    ## save the mapping from instance name to id
-    from  robomimic.envs.env_robosuite import get_name2id
-    name2id = get_name2id(env.env)
-    name2id_json = json.dumps(name2id)
-    f_out.create_dataset("instance_name2id", data=name2id_json)
 
     # debug_ep_id = 0
     debug_ep_id = None
@@ -294,6 +178,7 @@ def dataset_states_to_obs(args):
         initial_state_list = []
         states_list = []
         actions_list = []
+        output_path_list = []
         for j in range(i, end):
 
             # debug
@@ -301,6 +186,8 @@ def dataset_states_to_obs(args):
                 continue
 
             ep = demos[j]
+
+            output_path = os.path.join(output_dir, ep + ".mp4")
             # prepare initial state to reload from
             states = f["data/{}/states".format(ep)][()]
             initial_state = dict(states=states[0])
@@ -311,77 +198,18 @@ def dataset_states_to_obs(args):
             initial_state_list.append(initial_state)
             states_list.append(states)
             actions_list.append(actions)
-            
+            output_path_list.append(output_path)
         if debug_ep_id is not None:
 
             if len(states_list) > 0:
-                trajs =worker([env_meta, args, initial_state_list[0], states_list[0], actions_list[0]])
+                trajs =worker([env_meta, args, initial_state_list[0], states_list[0], actions_list[0], output_path_list[0]])
             else:
                 continue
         else:
             with multiprocessing.Pool(num_workers) as pool:
-                trajs = pool.map(worker, [[env_meta, args, initial_state_list[j], states_list[j], actions_list[j]] for j in range(len(initial_state_list))]) 
-
-        for j, ind in enumerate(range(i, end)):
-            ep = demos[ind]
-            traj = trajs[j]
-            # maybe copy reward or done signal from source file
-            if args.copy_rewards:
-                traj["rewards"] = f["data/{}/rewards".format(ep)][()]
-            if args.copy_dones:
-                traj["dones"] = f["data/{}/dones".format(ep)][()]
-
-            # store transitions
-
-            # IMPORTANT: keep name of group the same as source file, to make sure that filter keys are
-            #            consistent as well
-            ep_data_grp = data_grp.create_group(ep)
-            ep_data_grp.create_dataset("actions", data=np.array(traj["actions"]))
-            ep_data_grp.create_dataset("states", data=np.array(traj["states"]))
-            ep_data_grp.create_dataset("rewards", data=np.array(traj["rewards"]))
-            ep_data_grp.create_dataset("dones", data=np.array(traj["dones"]))
-            ignore_keys = ['depth']  #, 'segment']
-            # ignore_keys = []
-            for k in traj["obs"]:
-                ignore = False
-                for ignore_key in ignore_keys:
-                    if ignore_key in k:
-                        # skip keys that contain ignore_key
-                        ignore = True
-                        break
-                if ignore:
-                    continue
-
-                if args.compress:
-                    ep_data_grp.create_dataset("obs/{}".format(k), data=np.array(traj["obs"][k]), compression="gzip")
-                else:
-                    ep_data_grp.create_dataset("obs/{}".format(k), data=np.array(traj["obs"][k]))
-                if not args.exclude_next_obs:
-                    if args.compress:
-                        ep_data_grp.create_dataset("next_obs/{}".format(k), data=np.array(traj["next_obs"][k]), compression="gzip")
-                    else:
-                        ep_data_grp.create_dataset("next_obs/{}".format(k), data=np.array(traj["next_obs"][k]))
-
-            # episode metadata
-            if is_robosuite_env:
-                ep_data_grp.attrs["model_file"] = traj["initial_state_dict"]["model"] # model xml for this episode
-            ep_data_grp.attrs["num_samples"] = traj["actions"].shape[0] # number of transitions in this episode
-            total_samples += traj["actions"].shape[0]
-            print("ep {}: wrote {} transitions to group {}".format(ind, ep_data_grp.attrs["num_samples"], ep))
-        
-        del trajs
-
-    # copy over all filter keys that exist in the original hdf5
-    if "mask" in f:
-        f.copy("mask", f_out)
-
-    # global metadata
-    data_grp.attrs["total"] = total_samples
-    data_grp.attrs["env_args"] = json.dumps(env.serialize(), indent=4) # environment info
-    print("Wrote {} trajectories to {}".format(len(demos), output_path))
+                trajs = pool.map(worker, [[env_meta, args, initial_state_list[j], states_list[j], actions_list[j], output_path_list[j]] for j in range(len(initial_state_list))]) 
 
     f.close()
-    f_out.close()
 
 
 
@@ -521,6 +349,6 @@ if __name__ == "__main__":
             per_file_args = deepcopy(args)
             per_file_args.input = dataset_path
             print(f"\nProcessing dataset: {dataset_path}")
-            dataset_states_to_obs(per_file_args)
+            dataset_to_vids(per_file_args)
     else:
-        dataset_states_to_obs(args)
+        dataset_to_vids(args)

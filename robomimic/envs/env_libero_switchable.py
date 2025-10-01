@@ -61,7 +61,7 @@ default_options = {
 }
 
 class Libero_env_switchable(EnvRobosuite):
-    def __init__(self, task_suite_name, task_name, env_options = default_options, controller_name = "OSC_POSE", abs_action = False, postprocess_visual_obs = True, max_framerate = 25, max_timesteps = 500,  render_obs_keys=["agentview_image", "robot0_eye_in_hand_image"], env_name ="Libero_Tabletop_Manipulation", initialize_logger = False):
+    def __init__(self, task_suite_name, task_name, env_options = default_options, controller_name = "OSC_POSE", abs_action = False, postprocess_visual_obs = True, max_framerate = 25, max_timesteps = 1000,  render_obs_keys=["agentview_image", "robot0_eye_in_hand_image"], env_name ="Libero_Tabletop_Manipulation", initialize_logger = False):
         
         robosuite_version_id = int(suite.__version__.split(".")[1])
         assert robosuite_version_id >= 5, "Made for Robosuite V1.5 switchable version"
@@ -264,15 +264,37 @@ class Libero_env_switchable(EnvRobosuite):
     def inference_once(self):
         self.replay_tamp_step(self.last_action)
 
-    def get_cur_jpose(self):
+    def get_cur_jpose_robosuite(self):
         cur_obs = self.env._get_observations(force_update = True)
-        robot_jposes = []
+        robot_jposes = {}
+        
+        side_mapping = {'robot0': 'left', 'robot1': 'right'}
         for robot in self.env.robots:
             robot_nick_name = f'robot{robot.idn}'
-            jpose = cur_obs[f"{robot_nick_name}_joint_pos"].reshape(1, -1)
-            robot_jposes.append(jpose)
-        robot_jposes = np.concatenate(robot_jposes, axis=0)
+            jpose = cur_obs[f"{robot_nick_name}_joint_pos"]
+            side = side_mapping[robot_nick_name]
+            robot_jposes[f'{side}_arm'] = list(jpose)
+
+            gripper_left_finger = cur_obs[f"{robot_nick_name}_gripper_qpos"][0]
+            ## for franka, not for aloha
+            gripper_qpos =  np.array([gripper_left_finger, gripper_left_finger])
+            robot_jposes[f'{side}_gripper'] = list(gripper_qpos)
+
+            robot_jposes[f'{side}_robot'] = list(np.concatenate((jpose, gripper_qpos), axis=0))
+
+
         return robot_jposes
+    
+    def get_cur_eef_xyz_robosuite(self):
+        robot_eef_xyz = {}
+        side_mapping = {'robot0': 'left', 'robot1': 'right'}
+        for robot in self.env.robots:
+            robot_nick_name = f'robot{robot.idn}'
+            eef_xyz = self.raw_obs[f"{robot_nick_name}_eef_pos"]
+            side = side_mapping[robot_nick_name]
+            robot_eef_xyz[f'{side}_arm'] = list(eef_xyz)
+
+        return robot_eef_xyz
 
     def log_observations_with_rerun(self):
         """Log current observations using the rerun logger."""

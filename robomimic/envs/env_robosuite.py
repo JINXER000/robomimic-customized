@@ -114,10 +114,10 @@ def get_d_cams(env_name):
     #     list: List of depth camera names.
     # """
     if env_name.startswith('Libero_'):
-        return ['agentview']
-        # return ['agentview', 'robot0_eye_in_hand'] 
+        # return ['agentview']
+        return ['agentview', 'birdview'] 
     else:
-        return ['agentview', 'birdview', 'frontview']  ## 'frontview', 'sideview'
+        return ['agentview', 'birdview', 'sideview']  ## 'frontview', 'sideview'
 
 # def is_cam_used(env, cam_name):
 #     if 'Libero_' in env._env_name:
@@ -353,6 +353,7 @@ class EnvRobosuite(EB.EnvBase):
 
     def get_instance_pcd(self, di, require_downsample = True):
         instance_pcds = {k:o3d.geometry.PointCloud() for k in self.interested_objects}
+        visible_dicts = {f'{k}_visible': True for k in self.interested_objects}
         name2id = get_name2id(self.env)
         for cam_idx, camera_name in enumerate(self.env.camera_names):
             if camera_name not in self.d_cams:
@@ -404,11 +405,17 @@ class EnvRobosuite(EB.EnvBase):
             obj_pcd, ind = obj_pcd_rad.remove_statistical_outlier(nb_neighbors=5, std_ratio=7.0)
             # o3d.io.write_point_cloud(f'{obj_name}_128.ply', obj_pcd)
 
-            if len(obj_pcd.points) == 0:
-                # create fake points
-                obj_pcd.points = o3d.utility.Vector3dVector(np.array([[0., 0., 0.]]))
-                obj_pcd.colors = o3d.utility.Vector3dVector(np.array([[0., 0., 0.]]))
-            if len(obj_pcd.points) < obj_pc_size:
+            if len(obj_pcd.points) < obj_pc_size * 0.1:
+                # print(f"Warning: object {obj_name} is invisible")
+                # pc_instance_dict[f'{obj_name}_point_cloud'] = None
+                # kdtree_instance_dict[f'{obj_name}_kdtree'] = None
+                # continue
+                ## create fake points
+                obj_pcd.points = o3d.utility.Vector3dVector(np.zeros((obj_pc_size,3)))
+                obj_pcd.colors = o3d.utility.Vector3dVector(np.zeros((obj_pc_size,3)))
+                visible_dicts[f'{obj_name}_visible'] = False
+                
+            elif len(obj_pcd.points) < obj_pc_size:
                 # random upsample to obj_pc_size
                 num_pad = obj_pc_size - len(obj_pcd.points)
                 indices = np.random.choice(len(obj_pcd.points), num_pad)
@@ -420,16 +427,19 @@ class EnvRobosuite(EB.EnvBase):
                 obj_pcd.points = o3d.utility.Vector3dVector(xyz)
                 obj_pcd.colors = o3d.utility.Vector3dVector(color)
             
-            if require_downsample:
+            elif require_downsample:
                 obj_pcd = obj_pcd.farthest_point_down_sample(obj_pc_size)
 
             obj_xyz = np.asarray(obj_pcd.points)
             obj_color = np.asarray(obj_pcd.colors)
             pc_instance_dict[f'{obj_name}_point_cloud'] = np.concatenate([obj_xyz, obj_color], 1)
 
-            kdtree_instance_dict[f'{obj_name}_kdtree'] = KDTree(obj_xyz)
+            if visible_dicts[f'{obj_name}_visible']:
+                kdtree_instance_dict[f'{obj_name}_kdtree'] = KDTree(obj_xyz)
+            else:
+                kdtree_instance_dict[f'{obj_name}_kdtree'] = None
 
-        return pc_instance_dict, kdtree_instance_dict
+        return pc_instance_dict, kdtree_instance_dict, visible_dicts
 
     def in_rbt_body(self, di, point, rbt_radius = 0.2):
         robot_pose = self.env.robots[0].base_pos
@@ -590,17 +600,17 @@ class EnvRobosuite(EB.EnvBase):
 
         return {'voxels': np_voxels, 'point_cloud': np.concatenate([xyz, color], 1)}
 
-    def get_instance_and_obstacles_pcd(self, di, require_downsample=True):
-        pc_instance_dict, kdtree_instance_dict = self.get_instance_pcd(di, require_downsample=require_downsample)
-        all_pcd_voxels = self.get_all_pcd(di)
-        # ag_img = di['robot0_eye_in_hand_image']
-        # import cv2
-        # cv2.imwrite('ag_img.png', ag_img)
-        obstacle_pcd = self.get_obstacle_pcd(di, all_pcd_voxels['point_cloud'], kdtree_instance_dict)
+    def get_instance_and_obstacles_pcd(self, di, require_downsample=True, get_obstacle = True):
+        pc_instance_dict, kdtree_instance_dict, visible_dicts = self.get_instance_pcd(di, require_downsample=require_downsample)
         output_dict = pc_instance_dict.copy()
-        if obstacle_pcd is not None:
-            output_dict['obstacle_pcd'] = obstacle_pcd
-        return output_dict
+
+        if get_obstacle:
+            all_pcd_voxels = self.get_all_pcd(di)
+
+            obstacle_pcd = self.get_obstacle_pcd(di, all_pcd_voxels['point_cloud'], kdtree_instance_dict)
+            if obstacle_pcd is not None:
+                output_dict['obstacle_pcd'] = obstacle_pcd
+        return output_dict, visible_dicts
 
     def get_observation(self, di=None):
         """
@@ -632,8 +642,10 @@ class EnvRobosuite(EB.EnvBase):
         if self.env.use_camera_obs:
 
             if self.output_instance_pcd:
-                pc_instance_dict, _ = self.get_instance_pcd(di)
+                pc_instance_dict, _, visible_dict = self.get_instance_pcd(di)
                 ret.update(pc_instance_dict)
+                ret.update(visible_dict)
+
 
             ## TODO: output obstacle pcds (all pcds that does not lie in OOBB of interested objects, and below gripper range)
             if self.output_all_pcds:
