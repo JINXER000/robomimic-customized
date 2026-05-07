@@ -10,6 +10,12 @@ import open3d as o3d
 
 import robosuite
 from robosuite.utils.camera_utils import get_real_depth_map, get_camera_extrinsic_matrix, get_camera_intrinsic_matrix
+
+try:
+    # this is needed for ensuring robosuite can find the additional mimicgen environments (see https://mimicgen.github.io)
+    import mimicgen
+except ImportError:
+    pass
 try:
     # this is needed for ensuring robosuite can find the additional mimicgen environments (see https://mimicgen.github.io)
     import mimicgen_envs
@@ -117,7 +123,8 @@ def get_d_cams(env_name):
         # return ['agentview']
         return ['agentview', 'birdview'] 
     else:
-        return ['agentview', 'birdview', 'sideview']  ## 'frontview', 'sideview'
+        # return ['agentview', 'birdview', 'sideview'] #'sideview']  ## 
+        return ['agentview']
 
 # def is_cam_used(env, cam_name):
 #     if 'Libero_' in env._env_name:

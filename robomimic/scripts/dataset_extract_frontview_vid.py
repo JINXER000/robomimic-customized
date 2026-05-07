@@ -27,7 +27,7 @@ def extract_vid(
 
     done_mode = args.done_mode
 
-    camera_names = ['agentview']
+    camera_names = args.camera_names if len(args.camera_names) > 0 else ['agentview']
  
     env = EnvUtils.create_env_for_data_processing(
         env_meta=env_meta,
@@ -56,9 +56,15 @@ def extract_vid(
             next_obs = env.reset_to({"states" : states[t]})
 
         # TODO: record video
-        img_key = 'agentview_image' if 'agentview_image' in obs else 'agentview_rgb'
-        front_img = obs[img_key]
-        video_writer.append_data(front_img)
+        frames = []
+        for cam_name in camera_names:
+            image_key = f"{cam_name}_image" if f"{cam_name}_image" in obs else f"{cam_name}_rgb"
+            if image_key not in obs:
+                raise KeyError(f"Camera {cam_name} not found in observations.")
+            frames.append(obs[image_key])
+
+        frame = frames[0] if len(frames) == 1 else np.concatenate(frames, axis=1)
+        video_writer.append_data(frame)
 
         # update for next iter
         obs = deepcopy(next_obs)
@@ -125,7 +131,7 @@ def dataset_to_vids(args):
         robots = env_meta['env_kwargs']['robots']
         sides = ["right", "left"]
 
-    camera_names=['agentview']
+    camera_names = args.camera_names if len(args.camera_names) > 0 else ['agentview']
         
     ## revise controller config for V1.5.1
     robosuite_version_id = int(robosuite.__version__.split(".")[1])

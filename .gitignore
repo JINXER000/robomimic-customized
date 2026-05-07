@@ -126,3 +126,4 @@ macros_private.py
 
 *.vscode
 *.ply
+.omx/

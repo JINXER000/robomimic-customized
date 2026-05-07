@@ -183,7 +183,7 @@ def dataset_states_to_obs(args):
     num_workers = args.num_workers
     # Determine output path early and skip if it already exists to avoid creating rendering contexts
     input_file_name = os.path.basename(args.input)
-    output_path = os.path.join(args.output_dir, input_file_name.replace(".hdf5", "_pc_instance.hdf5"))
+    output_path = os.path.join(args.output_dir, input_file_name.replace(".hdf5", f"_pc_instance{args.n}.hdf5"))
     parent_dir = os.path.dirname(output_path)
     if parent_dir and not os.path.exists(parent_dir):
         os.makedirs(parent_dir, exist_ok=True)
@@ -220,8 +220,6 @@ def dataset_states_to_obs(args):
         env_meta['env_kwargs']['bddl_file_name'] = task_bddl_file
         env_meta['env_kwargs']["camera_segmentations"] = "instance"
 
-        robots = env_meta['env_kwargs']['robots'][0]
-        sides = ['right']
     else:
         # camera_names=['birdview', 'agentview', 'sideview', 'robot0_eye_in_hand']
         camera_names = env_meta['env_kwargs'].get('camera_names', ['frontview', 'birdview', 'agentview', 'sideview', 'robot0_eye_in_hand'])
@@ -231,6 +229,9 @@ def dataset_states_to_obs(args):
         env_meta['env_kwargs']["camera_segmentations"] = "instance"
         robots = env_meta['env_kwargs']['robots']
         sides = ["right", "left"]
+    else:
+        robots = env_meta['env_kwargs']['robots'][0]
+        sides = ['right']
 
     env_meta['env_kwargs']['output_all_pcds'] = args.output_all_pcds
         
