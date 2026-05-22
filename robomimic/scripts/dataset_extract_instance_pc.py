@@ -86,7 +86,9 @@ def extract_trajectory(
     elif env_meta['env_name'].startswith('Libero_'):
         camera_names=['agentview', 'robot0_eye_in_hand']
         # camera_names.append("birdview")
-    else: ## mimicgen, dexmimicgen
+    elif env_meta['env_name'].startswith('TwoArm'):
+        camera_names=['agentview', 'birdview', 'robot0_eye_in_hand']
+    else: ## mimicgen
         camera_names=['frontview', 'birdview', 'agentview',  'robot0_eye_in_hand', 'sideview'] # sideview
     ## dexmimicgen
     if args.num_robots == 2:
@@ -220,6 +222,8 @@ def dataset_states_to_obs(args):
         env_meta['env_kwargs']['bddl_file_name'] = task_bddl_file
         env_meta['env_kwargs']["camera_segmentations"] = "instance"
 
+    elif env_meta['env_name'].startswith('TwoArm'):
+        camera_names=['agentview', 'birdview', 'robot0_eye_in_hand']
     else:
         # camera_names=['birdview', 'agentview', 'sideview', 'robot0_eye_in_hand']
         camera_names = env_meta['env_kwargs'].get('camera_names', ['frontview', 'birdview', 'agentview', 'sideview', 'robot0_eye_in_hand'])

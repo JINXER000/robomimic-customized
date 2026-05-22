@@ -119,12 +119,13 @@ def get_d_cams(env_name):
     # Returns:
     #     list: List of depth camera names.
     # """
-    if env_name.startswith('Libero_'):
-        # return ['agentview']
-        return ['agentview', 'birdview'] 
-    else:
-        # return ['agentview', 'birdview', 'sideview'] #'sideview']  ## 
-        return ['agentview']
+    return ['agentview', 'birdview'] 
+    # if env_name.startswith('Libero_'):
+    #     # return ['agentview']
+    #     return ['agentview', 'birdview'] 
+    # else:
+    #     # return ['agentview', 'birdview', 'sideview'] #'sideview']  ## 
+    #     return ['agentview']
 
 # def is_cam_used(env, cam_name):
 #     if 'Libero_' in env._env_name:
@@ -228,7 +229,9 @@ class EnvRobosuite(EB.EnvBase):
             # voxel_center[:2] = self.env.table_offset[:2]
             pc_center = np.array(self.env.workspace_offset)
         elif hasattr(self.env, 'table_offset'):
-             pc_center = np.array(self.env.table_offset)
+            pc_center = np.array(self.env.table_offset)
+        elif hasattr(self.env, 'table_offsets'):
+            pc_center = np.mean(self.env.table_offsets, axis=0)
 
         pc_center[2] = pc_center[2] + 0.02  #table thickness related to env.z_offset
         voxel_center = pc_center
