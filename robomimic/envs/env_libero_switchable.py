@@ -13,7 +13,7 @@ except ImportError:
 from libero.libero import benchmark
 from libero.libero import get_libero_path
 
-from robomimic.utils.rerun_logger import RerunLogger
+# from robomimic.utils.rerun_logger import RerunLogger
 import networkx as nx
 import os
 import json

@@ -110,22 +110,11 @@ def get_interested_objects(env, env_name):
     return interested_objects
 
 def get_d_cams(env_name):
-    """
-    # Get the depth cameras to use for instance point cloud extraction based on the environment name.
-    
-    # Args:
-    #     env_name (str): Name of the environment.
-        
-    # Returns:
-    #     list: List of depth camera names.
-    # """
-    return ['agentview', 'birdview'] 
-    # if env_name.startswith('Libero_'):
-    #     # return ['agentview']
-    #     return ['agentview', 'birdview'] 
-    # else:
-    #     # return ['agentview', 'birdview', 'sideview'] #'sideview']  ## 
-    #     return ['agentview']
+    """Get depth cameras used to construct instance point cloud."""
+    if env_name.startswith('Libero_'):
+        return ['agentview', 'birdview']
+    else:
+        return ['agentview']
 
 # def is_cam_used(env, cam_name):
 #     if 'Libero_' in env._env_name:
@@ -221,38 +210,57 @@ class EnvRobosuite(EB.EnvBase):
                 if ("joint_pos" in ob_name) or ("eef_vel" in ob_name):
                     self.env.modify_observable(observable_name=ob_name, attribute="active", modifier=True)
 
-        # voxel_center = np.array([0, 0, 0.7])
-        # pc_center = np.array([0, 0, 0.7])
-        voxel_center = np.array([0, 0, 0.03])
-        pc_center = np.array([0, 0, 0.03])
-        if hasattr(self.env, 'workspace_offset'):
-            # voxel_center[:2] = self.env.table_offset[:2]
-            pc_center = np.array(self.env.workspace_offset)
-        elif hasattr(self.env, 'table_offset'):
-            pc_center = np.array(self.env.table_offset)
-        elif hasattr(self.env, 'table_offsets'):
-            pc_center = np.mean(self.env.table_offsets, axis=0)
-
-        pc_center[2] = pc_center[2] + 0.02  #table thickness related to env.z_offset
-        voxel_center = pc_center
         self.ws_size = 0.6
-        # if env_name.startswith('Kitchen_'):
-        #     self.ws_size = 0.7
-        #     pc_center = self.env.table_offset
-        # elif env_name.startswith('PickPlace_'):
-        #     pc_center = np.array([0, 0, 0.83])
-        #     self.ws_size = 1.1
 
-        self.voxel_workspace = np.array([
-            [voxel_center[0] - self.ws_size/2, voxel_center[0] + self.ws_size/2],
-            [voxel_center[1] - self.ws_size/2, voxel_center[1] + self.ws_size/2],
-            [voxel_center[2], voxel_center[2] + self.ws_size/2]
-        ])
-        self.pc_workspace = np.array([
-            [pc_center[0] - self.ws_size/2, pc_center[0] + self.ws_size/2],
-            [pc_center[1] - self.ws_size/2, pc_center[1] + self.ws_size/2],
-            [pc_center[2], pc_center[2] + self.ws_size*0.4]  ## TODO: filter out gripper pc
-        ])
+        if env_name.startswith('Libero_'):
+            # Tight workspace for libero — narrow z range to filter gripper.
+            voxel_center = np.array([0, 0, 0.03])
+            pc_center = np.array([0, 0, 0.03])
+            if hasattr(self.env, 'workspace_offset'):
+                pc_center = np.array(self.env.workspace_offset)
+            elif hasattr(self.env, 'table_offset'):
+                pc_center = np.array(self.env.table_offset)
+            elif hasattr(self.env, 'table_offsets'):
+                pc_center = np.mean(self.env.table_offsets, axis=0)
+            pc_center[2] = pc_center[2] + 0.02
+            voxel_center = pc_center
+
+            self.voxel_workspace = np.array([
+                [voxel_center[0] - self.ws_size/2, voxel_center[0] + self.ws_size/2],
+                [voxel_center[1] - self.ws_size/2, voxel_center[1] + self.ws_size/2],
+                [voxel_center[2], voxel_center[2] + self.ws_size/2],
+            ])
+            self.pc_workspace = np.array([
+                [pc_center[0] - self.ws_size/2, pc_center[0] + self.ws_size/2],
+                [pc_center[1] - self.ws_size/2, pc_center[1] + self.ws_size/2],
+                [pc_center[2], pc_center[2] + self.ws_size*0.4],
+            ])
+        else:
+            # Dmg + other envs — wide workspace (original range).
+            voxel_center = np.array([0, 0, 0.7])
+            pc_center = np.array([0, 0, 0.7])
+            if hasattr(self.env, 'table_offset'):
+                voxel_center[:2] = self.env.table_offset[:2]
+                pc_center = np.array(self.env.table_offset)
+                pc_center[2] = pc_center[2] + 0.02
+            if env_name.startswith('Kitchen_'):
+                self.ws_size = 0.7
+                pc_center = np.array(self.env.table_offset)
+                pc_center[2] = pc_center[2] + 0.02
+            elif env_name.startswith('PickPlace_'):
+                pc_center = np.array([0, 0, 0.83])
+                self.ws_size = 1.1
+
+            self.voxel_workspace = np.array([
+                [voxel_center[0] - self.ws_size/2, voxel_center[0] + self.ws_size/2],
+                [voxel_center[1] - self.ws_size/2, voxel_center[1] + self.ws_size/2],
+                [voxel_center[2], voxel_center[2] + self.ws_size],
+            ])
+            self.pc_workspace = np.array([
+                [pc_center[0] - self.ws_size/2, pc_center[0] + self.ws_size/2],
+                [pc_center[1] - self.ws_size/2, pc_center[1] + self.ws_size/2],
+                [pc_center[2], pc_center[2] + self.ws_size],
+            ])
 
         self.obj_pc_size= 512
         self.all_pc_size = 1024
@@ -415,12 +423,14 @@ class EnvRobosuite(EB.EnvBase):
             obj_pcd, ind = obj_pcd_rad.remove_statistical_outlier(nb_neighbors=5, std_ratio=7.0)
             # o3d.io.write_point_cloud(f'{obj_name}_128.ply', obj_pcd)
 
-            if len(obj_pcd.points) < obj_pc_size * 0.1:
-                # print(f"Warning: object {obj_name} is invisible")
-                # pc_instance_dict[f'{obj_name}_point_cloud'] = None
-                # kdtree_instance_dict[f'{obj_name}_kdtree'] = None
-                # continue
-                ## create fake points
+            # Visibility floor is an ABSOLUTE point count, not a fraction of the sample
+            # target obj_pc_size: a small/flat object (e.g. butter) yields only ~30 real
+            # points at this camera resolution, which is enough to attempt a grasp but
+            # well under obj_pc_size*0.1. Below this floor the cloud is too sparse to
+            # trust, so it is zeroed out and flagged invisible.
+            min_visible_points = 10
+            if len(obj_pcd.points) < min_visible_points:
+                ## too few real points: zero out and mark invisible
                 obj_pcd.points = o3d.utility.Vector3dVector(np.zeros((obj_pc_size,3)))
                 obj_pcd.colors = o3d.utility.Vector3dVector(np.zeros((obj_pc_size,3)))
                 visible_dicts[f'{obj_name}_visible'] = False
@@ -477,7 +487,8 @@ class EnvRobosuite(EB.EnvBase):
 
         far_mask = np.ones(len(all_points), dtype=bool)
         for obj_kdt_name, instance_kdt in kdtree_instance_dict.items():
-                
+            if instance_kdt is None:
+                continue
             distances, _ = instance_kdt.query(all_points, distance_upper_bound=0.02)
 
             # distances < inf means there's a neighbor within 2cm
@@ -541,10 +552,6 @@ class EnvRobosuite(EB.EnvBase):
 
         all_pcds = o3d.geometry.PointCloud()
         for cam_idx, camera_name in enumerate(self.env.camera_names):
-            if camera_name not in self.d_cams:
-                continue  
-            # if not is_cam_used(camera_name):
-            #     continue
             cam_height = self.env.camera_heights[cam_idx]
             cam_width = self.env.camera_widths[cam_idx]
             ext_mat = get_camera_extrinsic_matrix(self.env.sim, camera_name)
