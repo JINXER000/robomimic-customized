@@ -25,8 +25,6 @@ def extract_vid(
     vid_path,
 ):
 
-    done_mode = args.done_mode
-
     camera_names = args.camera_names if len(args.camera_names) > 0 else ['agentview']
  
     env = EnvUtils.create_env_for_data_processing(
@@ -71,24 +69,21 @@ def extract_vid(
 
     video_writer.close()
 
-    return video_writer
-
 def worker(x):
     env_meta, args, initial_state, states, actions, output_path = x
 
     if os.path.exists(output_path):
         print(f"Output dir {output_path} already exists. Skipping...")
-        return 
-    
-    video_writer = extract_vid(
+        return
+
+    extract_vid(
         env_meta=env_meta,
         args=args,
-        initial_state=initial_state, 
-        states=states, 
+        initial_state=initial_state,
+        states=states,
         actions=actions,
         vid_path=output_path,
     )
-    return 
 
 def dataset_to_vids(args):
     num_workers = args.num_workers

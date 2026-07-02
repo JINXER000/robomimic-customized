@@ -14,43 +14,14 @@ from libero.libero import benchmark
 from libero.libero import get_libero_path
 
 # from robomimic.utils.rerun_logger import RerunLogger
-import networkx as nx
 import os
-import json
 import numpy as np
 from collections import namedtuple
 
 ts_tuple = namedtuple("ts_tuple", ["observation", "reward", "done", "info"])
 
-
-def to_camel_case(snake_str):
-    """Convert snake_case string to CamelCase"""
-    components = snake_str.split('_')
-    return ''.join(x.title() for x in components)
-
-def get_sg(hdf5_group, sg_name):
-    sg_json = hdf5_group[sg_name][()] if sg_name in hdf5_group else None
-    if sg_json is None:
-        return None
-    sg_str = sg_json.decode('utf-8')
-    sg = nx.node_link_graph(json.loads(sg_str))
-    return sg
-
-
-def refactor_controller_config(robot, controller_config):
-    controller_config["robot_name"] = robot.name
-    controller_config["sim"] = robot.sim
-    controller_config["eef_name"] = robot.gripper.important_sites["grip_site"]
-    controller_config["eef_rot_offset"] = robot.eef_rot_offset
-    controller_config["joint_indexes"] = {
-        "joints": robot.joint_indexes,
-        "qpos": robot._ref_joint_pos_indexes,
-        "qvel": robot._ref_joint_vel_indexes,
-    }
-    controller_config["actuator_range"] = robot.torque_limits
-    controller_config["policy_freq"] = robot.control_freq
-    controller_config["ndim"] = len(robot.robot_joints)
-    return controller_config
+# Maps robosuite robot nicknames to the side used in the TAMP joint/eef dicts.
+SIDE_MAPPING = {'robot0': 'left', 'robot1': 'right'}
 
 default_options = {
     "robots": ["Panda"],
@@ -216,27 +187,9 @@ class Libero_env_switchable(EnvRobosuite):
         self.controller_configs = self.update_controller_configs(
             controller_name=controller_name, abs_action=abs_action
         )
-        ## do partial reset following _reset_internal()
-        # self.env._action_dim = 0
-        for robot in self.env.robots:
-            # Get the switchable controller instance
-            controller = robot.composite_controller
-            
-            # Create a unique name for this configuration
-            config_name = f"{controller_name}_{'abs' if abs_action else 'delta'}"
-            
-            # Add or update the configuration
-            controller.add_configuration(
-                name=config_name,
-                part_controller_config=self.controller_configs["body_parts"],
-                composite_controller_specific_config=self.controller_configs
-            )
-            
-            # Switch to the new configuration
-            controller.switch_configuration(config_name)
-        
+        # reset_controller() rebuilds each robot's composite controller from the new
+        # configs and updates env._action_dim. This is the single switch path.
         self.env.reset_controller(self.controller_configs)
-        # Log the change
         print(
             f"Switched to {controller_name} controller with {'absolute' if abs_action else 'delta'} actions"
         )
@@ -267,12 +220,11 @@ class Libero_env_switchable(EnvRobosuite):
     def get_cur_jpose_robosuite(self):
         cur_obs = self.env._get_observations(force_update = True)
         robot_jposes = {}
-        
-        side_mapping = {'robot0': 'left', 'robot1': 'right'}
+
         for robot in self.env.robots:
             robot_nick_name = f'robot{robot.idn}'
             jpose = cur_obs[f"{robot_nick_name}_joint_pos"]
-            side = side_mapping[robot_nick_name]
+            side = SIDE_MAPPING[robot_nick_name]
             robot_jposes[f'{side}_arm'] = list(jpose)
 
             gripper_left_finger = cur_obs[f"{robot_nick_name}_gripper_qpos"][0]
@@ -287,11 +239,10 @@ class Libero_env_switchable(EnvRobosuite):
     
     def get_cur_eef_xyz_robosuite(self):
         robot_eef_xyz = {}
-        side_mapping = {'robot0': 'left', 'robot1': 'right'}
         for robot in self.env.robots:
             robot_nick_name = f'robot{robot.idn}'
             eef_xyz = self.raw_obs[f"{robot_nick_name}_eef_pos"]
-            side = side_mapping[robot_nick_name]
+            side = SIDE_MAPPING[robot_nick_name]
             robot_eef_xyz[f'{side}_arm'] = list(eef_xyz)
 
         return robot_eef_xyz
@@ -307,8 +258,6 @@ class Libero_env_switchable(EnvRobosuite):
         # Log images
         for render_key in self.render_obs_keys:
             self.rerun_logger_instance.update_img_obs(self.raw_obs[render_key], render_key)
-        
-        self.rerun_logger_instance.set_frame_time()
 
         # Also log eef poses for each robot
         for robot in self.env.robots:

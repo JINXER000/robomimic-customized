@@ -1,5 +1,57 @@
 # robomimic
 
+> **DR-LfD customized fork** — branch `pc` (point cloud), based on upstream
+> robomimic `0.3.0`. This fork adds point-cloud / instance-segmentation
+> observations and the extraction tooling DR-LfD's visuomotor policies consume.
+> The original upstream README follows after the divider.
+
+## DR-LfD fork — what's customized
+
+The `pc` branch extends robomimic's robosuite env layer to emit 3D observations,
+then provides scripts that bake those observations into HDF5 datasets for policy
+training/eval.
+
+1. **Point-cloud & instance-segmentation observations** —
+   `robomimic/envs/env_robosuite.py` (`EnvRobosuite`). From depth + instance
+   segmentation it builds per-object instance point clouds (`get_instance_pcd`,
+   with a `KDTree` per object), an obstacle point cloud (`get_obstacle_pcd`), and a
+   voxelized workspace (`get_all_pcd`, a `[4, 64, 64, 64]` RGB+occupancy grid).
+   `get_observation` injects these into the obs dict as `{obj}_point_cloud`,
+   `{obj}_kdtree`, `voxels`, and `point_cloud`. Outlier filtering uses Open3D radius
+   + statistical removal. New deps: `open3d`, `scipy`.
+
+2. **Adaptive PC workspace.** The bounding box auto-adapts per environment — a tight
+   box for LIBERO (centered via `workspace_offset`, narrow z to drop the gripper)
+   versus a wide box for the DexMimicGen bimanual tasks (centered on `table_offset`).
+
+3. **Switchable LIBERO envs** — `robomimic/envs/env_libero_switchable.py` (and
+   `_V4`). `Libero_env_switchable` (requires robosuite ≥ 1.5) adds switchable
+   controllers, TAMP replay hooks (`replay_tamp_step`, `inference_once`,
+   `get_cur_jpose_robosuite`), and `rerun`-based visualization
+   (`robomimic/utils/rerun_logger.py`).
+
+4. **Dataset-extraction scripts.**
+   `robomimic/scripts/dataset_extract_instance_pc.py` regenerates instance
+   point-cloud observations and writes `<name>_pc_instance<N>.hdf5` (plus an
+   `instance_name2id` map); `dataset_extract_frontview_vid.py` renders preview
+   videos. `dataset_states_to_obs.py` is lightly patched for the new camera sets
+   (`agentview` / `birdview`, plus `sideview` / `robot0_eye_in_hand` where needed).
+
+### Note
+Point-cloud observations are produced at the **env-wrapper + extraction-script**
+layer and stored in the HDF5 as ordinary obs keys (`*_point_cloud`, `voxels`); no
+new obs modality is registered in `obs_utils.py`, so the **consuming** training
+config (Diffusion-Policy / DR-LfD) must register those keys itself.
+
+### Install
+```bash
+git clone https://github.com/Dr-LfD/robomimic-customized.git -b pc robomimic
+pip install -e robomimic
+```
+`rerun_logger.py` is version-sensitive to the `rerun` SDK — pin a known-good version.
+
+---
+
 <p align="center">
   <img width="24.0%" src="docs/images/task_lift.gif">
   <img width="24.0%" src="docs/images/task_can.gif">

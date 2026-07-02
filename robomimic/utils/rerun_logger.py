@@ -1,6 +1,8 @@
 
 
 
+import time
+
 import rerun as rr
 import rerun.blueprint as rrb
 import numpy as np
@@ -74,7 +76,6 @@ class RerunLogger():
         
     def set_frame_time(self):
         """Set the time for the current frame."""
-        import time
         rr.set_time_seconds("log_time", time.time())
         rr.set_time_sequence("frame", self.frame_count)
         # rr.set_time('frame', self.frame_count)
@@ -110,30 +111,6 @@ class RerunLogger():
                 radii=[0.01] * len(self.trajectories[robot_name])  # Same radius for all points
             ),
         )
-    
-    # def update_camera_pose(self, camera_xyz, camera_quat, intrinsic_matrix=None, resolution=None):
-    #     """Update the camera pose and intrinsics for 2D reprojection."""
-    #     # camera_quat_tensor = torch.tensor(camera_quat)
-        
-    #     # Update camera transform
-    #     rr.log(
-    #         self.primary_camera_entity,
-    #         rr.Transform3D(
-    #             translation=camera_xyz,
-    #             rotation=rr.Quaternion(xyzw=camera_quat),
-    #             relation=rr.TransformRelation.ChildFromParent,
-    #         ),
-    #     )
-        
-    #     # Update camera intrinsics if provided
-    #     if intrinsic_matrix is not None and resolution is not None:
-    #         rr.log(
-    #             self.primary_camera_entity,
-    #             rr.Pinhole(
-    #                 image_from_camera=intrinsic_matrix,
-    #                 resolution=resolution
-    #             ),
-    #         )
     
     def log_3d_annotations(self, annotations):
         """Log 3D annotations that will be reprojected to 2D views."""

@@ -119,9 +119,6 @@ def extract_trajectory(
     # iteration variable @t is over "next obs" indices
     for t in range(1, traj_len + 1):
 
-        # if t == 196:
-        #     print("timestep 75")
-
         # get next observation
         if t == traj_len:
             # play final action to get next observation for last timestep

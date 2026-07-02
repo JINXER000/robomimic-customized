@@ -58,7 +58,7 @@ def get_name2id(env):
     Returns:
         dict: A dictionary mapping instance names to their IDs.
     """
-    return {inst: (i+1) for i, inst in enumerate(list(env.model.instances_to_ids.keys()))}
+    return {inst: (i+1) for i, inst in enumerate(env.model.instances_to_ids)}
 
 
 def depth2fgpcd(depth, mask, cam_params):
@@ -116,16 +116,7 @@ def get_d_cams(env_name):
     else:
         return ['agentview']
 
-# def is_cam_used(env, cam_name):
-#     if 'Libero_' in env._env_name:
-#         return True
-    
-#     d_cams = get_d_cams(env._env_name)
-#     if cam_name in d_cams:
-#         return True
-#     return False
 
-    
 class EnvRobosuite(EB.EnvBase):
     """Wrapper class for robosuite environments (https://github.com/ARISE-Initiative/robosuite)"""
     def __init__(
@@ -267,10 +258,7 @@ class EnvRobosuite(EB.EnvBase):
         self.obstacle_pc_size = 1024
         self.d_cams = get_d_cams(env_name)
 
-        if env_name.startswith('Libero_'):
-            self.is_libero = True
-        else:
-            self.is_libero = False
+        self.is_libero = env_name.startswith('Libero_')
 
         ## if there is interested objects and segmentation is enabled, output instance pcd.
         if "camera_segmentations" in kwargs and kwargs["camera_segmentations"] == "instance":
@@ -346,7 +334,7 @@ class EnvRobosuite(EB.EnvBase):
         if "goal" in state:
             self.set_goal(**state["goal"])
         if should_ret:
-            # only return obs if we've done a forward call - otherwise tget_d_camsd_camshe observations will be garbage
+            # only return obs if we've done a forward call - otherwise the observations will be garbage
             return self.get_observation()
         return None
 
@@ -518,32 +506,6 @@ class EnvRobosuite(EB.EnvBase):
         
         return np.concatenate([obstacle_xyz, obstacle_color], 1)
     
-    def _point_in_oriented_bbox(self, point, oobb):
-        """
-        Check if a point lies inside an oriented bounding box.
-        
-        Args:
-            point (np.array): 3D point coordinates
-            oobb (o3d.geometry.OrientedBoundingBox): Oriented bounding box
-            
-        Returns:
-            bool: True if point is inside the OOBB, False otherwise
-        """
-        # Get the center and rotation of the OOBB
-        center = oobb.center
-        R = oobb.R  # Rotation matrix (3x3)
-        extent = oobb.extent  # Half-lengths of the box
-        
-        # Transform point to OOBB's local coordinate system
-        # Subtract center and apply inverse rotation
-        local_point = R.T @ (point - center)
-        
-        # Check if point is within the box bounds in local coordinates
-        # extent contains half-lengths, so we check against [-extent, +extent]
-        return (np.abs(local_point[0]) <= extent[0] and 
-                np.abs(local_point[1]) <= extent[1] and 
-                np.abs(local_point[2]) <= extent[2])
-
     def get_all_pcd(self, di):
         workspace = self.voxel_workspace
 
